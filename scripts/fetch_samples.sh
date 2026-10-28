@@ -20,8 +20,8 @@ out = pymupdf.open()
 for i in range(3):
     pix = src[i].get_pixmap(dpi=150)
     page = out.new_page(width=src[i].rect.width, height=src[i].rect.height)
-    page.insert_image(page.rect, pixmap=pix)
-out.save("samples/earthmover-scanned-3p.pdf")
+    page.insert_image(page.rect, stream=pix.tobytes("jpeg", jpg_quality=80))
+out.save("samples/earthmover-scanned-3p.pdf", deflate=True)
 print("生成 samples/earthmover-scanned-3p.pdf")
 PYEOF
 ls -la samples/*.pdf

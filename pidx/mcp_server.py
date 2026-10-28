@@ -1,6 +1,6 @@
 """MCP server (stdio) exposing the pidx HTTP API as tools.
 
-  claude mcp add pidx -- /path/to/.venv/bin/python -m pidx.mcp_server
+  claude mcp add pidx -e PIDX_API=http://127.0.0.1:8890 -- /path/to/pidx/.venv/bin/python -m pidx.mcp_server
 Set PIDX_API (default http://127.0.0.1:8890) to point at the API server.
 """
 
@@ -8,10 +8,13 @@ import json
 import os
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+try:                                   # mcp >= 2
+    from mcp.server.mcpserver import MCPServer
+except ImportError:                    # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as MCPServer
 
 API = os.environ.get("PIDX_API", "http://127.0.0.1:8890")
-mcp = FastMCP("pidx")
+mcp = MCPServer("pidx")
 http = httpx.Client(base_url=API, timeout=600, trust_env=False)
 
 
