@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pidx Pipeline</title>
+<link rel="stylesheet" href="static/page.css">
+</head>
+<body>
+<header><h1>pidx</h1><span>PDF → 树索引 → LLM 推理检索（无向量、无切块）</span>
+  <nav><a href="./">演示</a><a href="pipeline" class="on">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
+
+<div class="layout">
+<aside class="toc">
+  <a href="#idea">核心思路</a>
+  <a href="#overview">总览</a>
+  <a href="#index">建索引</a>
+  <a class="sub" href="#parse">① 解析</a>
+  <a class="sub" href="#tree">② 建树</a>
+  <a class="sub" href="#refine">③ 拆分超长节点</a>
+  <a class="sub" href="#summary">④ 摘要与描述</a>
+  <a href="#search">检索</a>
+  <a class="sub" href="#s-docs">① 选文档</a>
+  <a class="sub" href="#s-tree">② 树检索</a>
+  <a class="sub" href="#s-read">③ 读原文</a>
+  <a class="sub" href="#s-answer">④ 作答与补搜</a>
+  <a href="#live">当前文档实测</a>
+  <a href="#models">模型与资源</a>
+  <a href="#vs">与 PageIndex 的对照</a>
+  <a href="#limits">已知局限</a>
+</aside>
+
+<main>
+<h2 id="idea">核心思路</h2>
+<p class="lead">像人读长文档一样检索：先看目录，判断答案在哪一节，翻到那一节读原文，再作答并标注出处。</p>
+<p>常见的向量 RAG 把文档切成固定大小的块，按「和问题像不像」取回。这有两个毛病：切块会把一张表、一段论证切断；「语义相似」也不等于「能回答问题」。比如问预算总额，命中的往往是提到"预算"最多的段落，而不是那张汇总表。</p>
+<p>pidx 的做法：</p>
+<ul>
+  <li>建索引时，为每份文档生成一棵<b>章节树</b>。每个节点有标题、页码范围和摘要，节点的原文是按位置精确切出来的，所以一节就是一个完整的检索单位，不会被切断。</li>
+  <li>检索时<b>不算相似度</b>。LLM 读整棵树的骨架（标题 + 页码 + 摘要），推理出该读哪几个节点，再读这些节点的原文作答。</li>
+  <li>答案中的论断会附上<b>版面块</b>引用（页码 + 坐标框），点开就能在原页上高亮。引用是 LLM 按提示词加的，大多数论断都会带，但不保证每一句都有。</li>
+</ul>
+
+<h2 id="overview">总览</h2>
+<div class="card" style="padding:10px">
+<svg viewBox="0 0 940 300" width="100%" role="img" aria-label="建索引和检索两条流水线">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+  <text x="8" y="22" style="fill:var(--muted);font-size:13px;font-weight:600">建索引（POST /v1/documents，后台异步）</text>
+  <g style="font-size:13px">
+    <rect x="8" y="36" width="110" height="64" rx="8" style="fill:var(--panel);stroke:var(--line)"/>
+    <text x="63" y="64" text-anchor="middle" style="fill:var(--ink);font-weight:600">PDF</text>
+    <text x="63" y="84" text-anchor="middle" style="fill:var(--muted);font-size:11px">文本型 / 扫描件</text>
+
+    <rect x="148" y="36" width="140" height="64" rx="8" style="fill:var(--panel);stroke:var(--s1);stroke-width:1.5"/>
+    <text x="218" y="62" text-anchor="middle" style="fill:var(--s1);font-weight:600">① 解析</text>
+    <text x="218" y="82" text-anchor="middle" style="fill:var(--muted);font-size:11px">PyMuPDF · MinerU OCR</text>
+
+    <rect x="318" y="36" width="160" height="64" rx="8" style="fill:var(--panel);stroke:var(--s1);stroke-width:1.5"/>
+    <text x="398" y="62" text-anchor="middle" style="fill:var(--s1);font-weight:600">② 建树</text>
+    <text x="398" y="82" text-anchor="middle" style="fill:var(--muted);font-size:11px">书签 → 版面+LLM → 读页</text>
+
+    <rect x="508" y="36" width="140" height="64" rx="8" style="fill:var(--panel);stroke:var(--s1);stroke-width:1.5"/>
+    <text x="578" y="62" text-anchor="middle" style="fill:var(--s1);font-weight:600">③ 拆分</text>
+    <text x="578" y="82" text-anchor="middle" style="fill:var(--muted);font-size:11px">&gt;10 页 / 2 万 token</text>
+
+    <rect x="678" y="36" width="130" height="64" rx="8" style="fill:var(--panel);stroke:var(--s1);stroke-width:1.5"/>
+    <text x="743" y="62" text-anchor="middle" style="fill:var(--s1);font-weight:600">④ 摘要</text>
+    <text x="743" y="82" text-anchor="middle" style="fill:var(--muted);font-size:11px">节点 + 文档描述</text>
+
+    <rect x="838" y="36" width="94" height="64" rx="8" style="fill:var(--panel);stroke:var(--line)"/>
+    <text x="885" y="64" text-anchor="middle" style="fill:var(--ink);font-weight:600">SQLite</text>
+    <text x="885" y="84" text-anchor="middle" style="fill:var(--muted);font-size:11px">树 · 页 · 块</text>
+  </g>
+  <g style="stroke:var(--muted);stroke-width:1.5;fill:none">
+    <line x1="118" y1="68" x2="146" y2="68" marker-end="url(#ar)"/>
+    <line x1="288" y1="68" x2="316" y2="68" marker-end="url(#ar)"/>
+    <line x1="478" y1="68" x2="506" y2="68" marker-end="url(#ar)"/>
+    <line x1="648" y1="68" x2="676" y2="68" marker-end="url(#ar)"/>
+    <line x1="808" y1="68" x2="836" y2="68" marker-end="url(#ar)"/>
+  </g>
+
+  <text x="8" y="160" style="fill:var(--muted);font-size:13px;font-weight:600">检索（POST /v1/search）</text>
+  <g style="font-size:13px">
+    <rect x="8" y="174" width="110" height="64" rx="8" style="fill:var(--panel);stroke:var(--line)"/>
+    <text x="63" y="211" text-anchor="middle" style="fill:var(--ink);font-weight:600">问题</text>
+
+    <rect x="148" y="174" width="140" height="64" rx="8" style="fill:var(--panel);stroke:var(--s2);stroke-width:1.5"/>
+    <text x="218" y="200" text-anchor="middle" style="fill:var(--s2);font-weight:600">① 选文档</text>
+    <text x="218" y="220" text-anchor="middle" style="fill:var(--muted);font-size:11px">读文档描述（多文档时）</text>
+
+    <rect x="318" y="174" width="160" height="64" rx="8" style="fill:var(--panel);stroke:var(--s2);stroke-width:1.5"/>
+    <text x="398" y="200" text-anchor="middle" style="fill:var(--s2);font-weight:600">② 树检索</text>
+    <text x="398" y="220" text-anchor="middle" style="fill:var(--muted);font-size:11px">LLM 读树骨架选节点</text>
+
+    <rect x="508" y="174" width="140" height="64" rx="8" style="fill:var(--panel);stroke:var(--s2);stroke-width:1.5"/>
+    <text x="578" y="200" text-anchor="middle" style="fill:var(--s2);font-weight:600">③ 读原文</text>
+    <text x="578" y="220" text-anchor="middle" style="fill:var(--muted);font-size:11px">按版面块打标签</text>
+
+    <rect x="678" y="174" width="130" height="64" rx="8" style="fill:var(--panel);stroke:var(--s2);stroke-width:1.5"/>
+    <text x="743" y="200" text-anchor="middle" style="fill:var(--s2);font-weight:600">④ 作答</text>
+    <text x="743" y="220" text-anchor="middle" style="fill:var(--muted);font-size:11px">块级引用</text>
+
+    <rect x="838" y="174" width="94" height="64" rx="8" style="fill:var(--panel);stroke:var(--line)"/>
+    <text x="885" y="200" text-anchor="middle" style="fill:var(--ink);font-weight:600">答案</text>
+    <text x="885" y="220" text-anchor="middle" style="fill:var(--muted);font-size:11px">页码 + bbox</text>
+  </g>
+  <g style="stroke:var(--muted);stroke-width:1.5;fill:none">
+    <line x1="118" y1="206" x2="146" y2="206" marker-end="url(#ar)"/>
+    <line x1="288" y1="206" x2="316" y2="206" marker-end="url(#ar)"/>
+    <line x1="478" y1="206" x2="506" y2="206" marker-end="url(#ar)"/>
+    <line x1="648" y1="206" x2="676" y2="206" marker-end="url(#ar)"/>
+    <line x1="808" y1="206" x2="836" y2="206" marker-end="url(#ar)"/>
+    <path d="M743,238 L743,272 L398,272 L398,242" style="stroke:var(--s4);stroke-dasharray:5 4" marker-end="url(#ar)"/>
+  </g>
+  <text x="570" y="290" text-anchor="middle" style="fill:var(--s4);font-size:12px">证据不足 → 说明缺什么，排除已读节点再搜一轮（默认最多 2 轮）</text>
+</svg>
+</div>
+<p class="muted">树检索读的是 SQLite 里存好的树。建索引时花的 LLM 调用是一次性的，之后每次提问通常只要 2–4 次调用。演示页会实时展示每一步，并在最后给出延迟瀑布图。</p>
+
+<h2 id="index">建索引</h2>
+
+<h3 id="parse">① 解析 <span class="muted" style="font-size:13px">pidx/parse.py</span></h3>
+<p>把 PDF 变成「页 → 版面块 → 行」。每个块有坐标框，后面的引用和高亮都靠它。</p>
+<table>
+  <tr><th style="width:150px">情况</th><th>做法</th></tr>
+  <tr><td>文本型 PDF</td><td>用 PyMuPDF 取出字符片段（span），按垂直位置重组成行。有些老 PDF 会把每个单词拆成一"行"，重组能修好这个问题。字号不可信（比如 TeX 字体报 0.1）时，改用字形高度。每行记下字号、是否粗体、所属块、在页文本里的字符偏移。</td></tr>
+  <tr><td>页眉页脚</td><td>出现在页面上下各 8% 区域、并且在 ≥25% 页上重复的行（比较前先把数字归一），以及页码，都从正文里去掉。这样它们不会混进节点原文，也不会被误当成标题。</td></tr>
+  <tr><td>扫描件</td><td>平均每页不到 80 个字符就判为扫描件，转交 mineru.net 的云端 MinerU（OCR + 版面分析）；单文件上限 200 页，超出的在本地切段后分别上传，结果再按页码拼回。MinerU 的 <code>content_list</code> 会带出标题层级、表格（HTML）、图片和图表的说明文字，坐标从 0–1000 换算回 PDF 坐标。也可以用 <code>mode=ocr</code> 强制走这条路。</td></tr>
+</table>
+
+<h3 id="tree">② 建树 <span class="muted" style="font-size:13px">pidx/tree.py</span></h3>
+<p>按可靠程度从高到低依次尝试，前一种不成立才用下一种：</p>
+<div class="card">
+  <p><span class="tag">策略 1</span><b>PDF 书签</b>：至少 3 条，并且 ≥90% 的书签按页码递增，才认为可信。每个书签标题会在它所在页上做模糊匹配（相似度 ≥0.8，允许跨 4 行），定位到具体的行，所以节点能从页中间开始。<br>
+  <span class="muted">例：美联储年报自带 50 条书签，直接成树。</span></p>
+  <p><span class="tag">策略 2</span><b>版面候选 + LLM 定结构</b>：先算出正文字号（按字符数加权的众数），比正文大 ≥0.9pt 的行、块首的短粗体行、MinerU 标出的标题都作为候选。去掉目录页里带引导点的行，跨行的标题合并，重复出现 3 次以上的文字剔除。然后把候选列表（编号 | 页 | 字号 | 粗体 | 文本）交给 LLM，让它挑出真正的章节标题并定层级。如果前 20 页里有目录页，目录全文也一起作为提示。<br>
+  <b>LLM 只能返回候选编号</b>，不能自己写标题的位置，所以每个标题都锚定在真实的一行上，不会出现幻觉章节。<br>
+  <span class="muted">例：Disney 财报没有书签，26 个候选 → 1 次 LLM 调用 → 26 个节点。</span></p>
+  <p><span class="tag">策略 3</span><b>LLM 直接读页</b>：版面没有可用信号时才用（例如字体信息坏掉的 PDF）。按每组约 1.2 万 token 把页文本带页号标签交给 LLM，让它列出各页开始的标题；每个标题都要回到声称的页（±1 页）上定位，找不到就丢弃。<br>
+  <span class="muted">例：four-lectures.pdf 的字号全是 0.1，走这条路得到 43 个节点。</span></p>
+  <p class="muted" style="margin-bottom:0">兜底：三种都失败时，每 10 页一个节点。第一个标题之前如果还有超过 200 字的内容，补一个 Preface 节点。</p>
+</div>
+<p>节点的边界是精确位置 <code>(页, 字符偏移)</code>：节点从自己的标题开始，到下一个同级或更高级标题结束。<code>start_index / end_index</code> 是根据位置算出的页码范围，节点原文按位置切片，所以同一页上的两个小节不会互相串文。</p>
+
+<h3 id="refine">③ 拆分超长节点</h3>
+<p>超过 10 页或 2 万 token 的叶子节点，太粗，检索时读不准，所以在它的范围内递归再建一层（最多 3 层）。做法和上面一样：先用放宽的候选条件（比正文大 ≥0.5pt，或者是 <code>1.2</code> / <code>A.</code> / <code>Item 7</code> / <code>第三章</code> 这样的编号行），让 LLM 只挑这一节的子标题；不行就退回策略 3。至少拆出 2 个子节点才采用。</p>
+<div class="note">例：美联储年报的书签里，「Supervisory Developments」一节横跨 p.35–54，自动拆出 19 个子节点。「Enforcement Actions」（p.41–42）就是这样来的，检索时能直接命中它。</div>
+
+<h3 id="summary">④ 摘要与文档描述</h3>
+<ul>
+  <li>叶子节点：2–4 句的 <code>summary</code>，写明涵盖的主题、实体、指标、表格和期间，目的是让 LLM 只看目录就能判断该不该读这一节。原文过长时取开头和结尾，约 6k token。</li>
+  <li>父节点：用标题到第一个子节点之间的引言写 1–2 句 <code>prefix_summary</code>（引言太短就跳过）。</li>
+  <li>文档：用两层大纲加前两页，写 2–3 句 <code>description</code>，供多文档检索时挑文档用。同时用 bge-m3（SiliconFlow）算一个向量，只在文档很多时用来粗筛。</li>
+  <li>所有节点并发处理（默认并发 24）。</li>
+</ul>
+
+<h2 id="search">检索 <span class="muted" style="font-size:13px">pidx/search.py</span></h2>
+
+<h3 id="s-docs">① 选文档</h3>
+<p>指定了 <code>doc_ids</code> 就只搜这些文档。否则先看库里有多少文档：超过 20 篇时，先用 bge-m3 按问题和文档描述的相似度取前 20；超过 1 篇时，让 LLM 读这些文档的名字和描述，挑出需要查的（最多 5 篇，对比类问题会挑多篇）。</p>
+
+<h3 id="s-tree">② 树检索</h3>
+<p>把树渲染成缩进文本，每行是 <code>[node_id] 标题 (p.起-止) — 摘要</code>，交给 LLM。它返回一段推理（答案应该在哪、为什么）和最多 <code>top_k</code> 个节点 id。提示词要求它优先选最具体的节点；对比、合计、定义、脚注这类信息可能分散在几处的问题，要多选几个。</p>
+<ul>
+  <li>树骨架不超过 4 万 token 时一次给全。更大的树先只展开两层，其余标成 collapsed，LLM 可以要求展开感兴趣的节点，最多交互 4 轮。</li>
+  <li>如果同时选中了一个节点和它的祖先：祖先的原文不超过 1.2 万 token 就只读祖先，否则只读更具体的子孙，避免同一段原文读两遍。</li>
+  <li>多文档时，各文档的树检索并行进行。</li>
+</ul>
+
+<h3 id="s-read">③ 读原文</h3>
+<p>选中节点的原文不是整段塞进去，而是按版面块排列，每块前面加上标签，例如 <code>[1:p42_b2] In 2023, the Federal Reserve completed 63 formal enforcement actions…</code>（1 是文档序号，p42_b2 是第 42 页第 2 块）。读取预算是每个节点 1.2 万 token、总共 6 万 token，超出的部分会截断并注明。</p>
+
+<h3 id="s-answer">④ 作答与补搜</h3>
+<p>LLM 只能依据这些原文作答，并在论断后面附上块标签。答案以 markdown 流式输出，最后一行是 <code>@@STATUS@@ {"sufficient", "missing"}</code>（这一行不会推送给前端）：</p>
+<ul>
+  <li><code>sufficient=false</code> 时，把"已经读过哪些节点、还缺什么"写进下一轮树检索的提示词，排除已读节点再找一轮（<code>max_rounds</code>，默认 2）。</li>
+  <li>答案里的块标签会映射回 <code>{doc_id, page, block_id, bbox, text}</code>，bbox 用千分比坐标，演示页据此在原页图上高亮。</li>
+  <li>库里没有答案时，它会明确说没有。演示页里的「不编造」那道题就是测这个的。</li>
+</ul>
+
+<h2 id="live">当前文档实测</h2>
+<p class="muted">从 <code>/v1/documents</code> 实时读取：建树用了哪种方式、节点数、各阶段耗时、建索引用了多少次 LLM 调用。</p>
+<div class="grid" id="kpis"></div>
+<div style="overflow-x:auto"><table id="live-table"><tr><td class="muted">加载中…</td></tr></table></div>
+
+<h2 id="models">模型与资源</h2>
+<table>
+  <tr><th>用途</th><th>资源</th><th>说明</th></tr>
+  <tr><td>建索引（建树、摘要、描述）</td><td>Atria-Dawn（tailnet 网关 :8100）</td><td>免费、256k 上下文，关闭 thinking，JSON 模式。调用量大，但没人在等，慢一点没关系。</td></tr>
+  <tr><td>检索（选文档、树检索、作答）</td><td>DeepSeek V4 Flash（默认，关闭 thinking）</td><td>付费，约 200 tok/s，首 token &lt;1s。每次请求可以用 <code>llm</code> 参数切回 <code>default</code>（即建索引用的模型，默认是免费的 Atria，约 20 tok/s）。</td></tr>
+  <tr><td>扫描件 OCR / 版面</td><td>MinerU 云端 API（mineru.net）</td><td>只有扫描件会用到。3 页扫描件约 20 秒；每天 1000 页高优先级额度，超出后排队变慢。</td></tr>
+  <tr><td>向量</td><td>BAAI/bge-m3（SiliconFlow API）</td><td>建索引时给文档描述算向量；文档超过 20 篇时用来粗筛；服务不可用时自动跳过。</td></tr>
+  <tr><td>存储</td><td>SQLite（<code>data/pidx.db</code>）+ 原 PDF</td><td>树以 JSON 存储，页文本和块坐标单独一张表。</td></tr>
+</table>
+
+<h2 id="vs">与 PageIndex 的对照</h2>
+<table>
+  <tr><th></th><th>PageIndex</th><th>pidx</th></tr>
+  <tr><td>树生成</td><td>Flash：纯版面规则，不用 LLM（开源）；LLM 只做摘要和修树</td><td>书签 → 版面候选交给 LLM 定结构（锚定到真实的行）→ LLM 读页并校验；超长节点递归拆分</td></tr>
+  <tr><td>扫描件 / 图片</td><td>云版有 OCR 和图像理解</td><td>用 MinerU 做 OCR；图像只能用到图注（Atria 看不了图）</td></tr>
+  <tr><td>引用</td><td>云版到块级（bbox）</td><td>块级（bbox，千分比坐标，和 PageIndex 一致）</td></tr>
+  <tr><td>检索</td><td>agent 在树上搜索</td><td>LLM 读树骨架选节点，大树分层展开，证据不足自动补搜</td></tr>
+  <tr><td>接口</td><td>submit / get_tree / get_page_content / get_block / chat</td><td>同样形状的 REST 接口 + <code>/v1/search</code> + MCP</td></tr>
+</table>
+
+<h2 id="limits">已知局限</h2>
+<ul>
+  <li><b>看不了图</b>：图表里的数字只有出现在图注或 OCR 文本里时才能用上。要真正理解图表，需要接一个视觉模型（DeepInfra 上的 Qwen3-VL，或者把自建 gemma 开成多模态）。</li>
+  <li><b>OCR 额度</b>：云端 MinerU 每天有 1000 页高优先级额度，大批量扫描件超出后会排队变慢。</li>
+  <li><b>字体信息坏掉的 PDF</b>只能走策略 3，层级偶尔会放错（four-lectures.pdf 的第 3 章就有这个问题）。</li>
+  <li><b>延迟</b>：检索用 DeepSeek 时，13 道推荐问题平均 3.9 秒（中位数 2.9 秒，最长 7.4 秒）；用 Atria 时平均 37 秒。两者 66% 以上的时间都花在逐 token 生成上，详见演示页每次问答最后的瀑布图。</li>
+  <li><b>还没有系统评测</b>：目前只人工核对了演示页上的推荐问题。下一步用 10-K 问答集和向量 RAG、开源 PageIndex 做对比。</li>
+</ul>
+</main>
+</div>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const METHOD = {"bookmarks": "PDF 书签", "layout+llm": "版面候选 + LLM", "llm-pages": "LLM 读页", "page-groups": "按页分组"};
+fetch("v1/documents?limit=200").then(r => r.json()).then(({documents}) => {
+  const done = documents.filter(d => d.status === "completed" && d.info);
+  const pages = done.reduce((a, d) => a + (d.pageNum || 0), 0);
+  const nodes = done.reduce((a, d) => a + (d.info.nodes || 0), 0);
+  const calls = done.reduce((a, d) => a + (d.info.llm?.calls || 0), 0);
+  const secs = done.reduce((a, d) => a + Object.values(d.info.seconds || {}).reduce((x, y) => x + y, 0), 0);
+  document.getElementById("kpis").innerHTML = [
+    [done.length, "已索引文档"], [pages, "总页数"], [nodes, "树节点"],
+    [pages ? (calls / pages).toFixed(2) : "–", "每页 LLM 调用"], [pages ? (secs / pages).toFixed(1) + " s" : "–", "每页耗时"]
+  ].map(([v, k]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  document.getElementById("live-table").innerHTML =
+    `<tr><th>文档</th><th>页</th><th>解析</th><th>建树方式</th><th>节点</th><th>解析 s</th><th>建树 s</th><th>摘要 s</th><th>LLM 调用</th><th>输入 / 输出 token</th></tr>` +
+    done.map(d => { const i = d.info, s = i.seconds || {}, l = i.llm || {};
+      return `<tr><td>${esc(d.name)}</td><td>${d.pageNum}</td><td>${esc(i.parser)}</td><td>${esc(METHOD[i.method] || i.method)}</td><td>${i.nodes}</td>
+        <td>${s.parse ?? ""}</td><td>${s.tree ?? ""}</td><td>${s.summary ?? ""}</td><td>${l.calls ?? ""}</td>
+        <td>${l.prompt_tokens ? (l.prompt_tokens/1000).toFixed(0) + "k / " + (l.completion_tokens/1000).toFixed(1) + "k" : ""}</td></tr>`; }).join("");
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pidx · Tree Index RAG</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1b1f24;--muted:#646d78;--line:#e2e5ea;--accent:#2457d6;--accent-soft:#e8eefc;--hl:#fff3c4;--ok:#1f8a4c;--warn:#b26a00;--bad:#c0392b}
+@media (prefers-color-scheme: dark){:root{--bg:#111418;--panel:#191d23;--ink:#e6e9ee;--muted:#98a1ad;--line:#2a3039;--accent:#7aa2ff;--accent-soft:#1f2a44;--hl:#4a3f12;--ok:#4cc38a;--warn:#e0a040;--bad:#ff7a6b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:16px;margin:0}
+header span{color:var(--muted);font-size:12px}
+header nav{margin-left:auto;display:flex;gap:4px}
+header nav a{color:var(--muted);text-decoration:none;font-size:13px;padding:4px 10px;border-radius:6px}
+header nav a:hover{background:var(--accent-soft);color:var(--accent)}
+header nav a.on{color:var(--accent);background:var(--accent-soft);font-weight:600}
+.sugg{padding:8px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px;max-height:34vh;overflow:auto}
+.sugg .lbl{font-size:12px;color:var(--muted)}
+.chip{display:flex;gap:8px;align-items:baseline;text-align:left;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12.5px;cursor:pointer;line-height:1.4}
+.chip:hover{border-color:var(--accent)}
+.chip b{flex:none;font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:1px 6px}
+.why{font-size:12px;color:var(--muted);border-left:3px solid var(--accent);padding:4px 8px;margin:8px 0;background:var(--accent-soft);border-radius:0 4px 4px 0}
+main{display:grid;grid-template-columns:260px minmax(300px,1fr) minmax(360px,1.3fr);gap:12px;padding:12px;height:calc(100vh - 49px)}
+@media (max-width:1000px){main{grid-template-columns:1fr;height:auto}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;min-height:0}
+section h2{font-size:13px;margin:0;padding:10px 12px;border-bottom:1px solid var(--line);color:var(--muted);font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.scroll{overflow:auto;padding:8px 12px;flex:1}
+.doc{padding:8px;border-radius:6px;cursor:pointer;border:1px solid transparent}
+.doc:hover{background:var(--accent-soft)}
+.doc.sel{border-color:var(--accent);background:var(--accent-soft)}
+.doc .n{font-weight:600;word-break:break-all}
+.doc .m{font-size:12px;color:var(--muted)}
+.st-completed{color:var(--ok)}.st-processing,.st-queued{color:var(--warn)}.st-failed{color:var(--bad)}
+.up{padding:10px 12px;border-bottom:1px solid var(--line)}
+.up input{width:100%;font-size:12px}
+.tn{padding:2px 0}
+.tn .row{display:flex;gap:6px;align-items:baseline;cursor:pointer;border-radius:4px;padding:2px 4px}
+.tn .row:hover{background:var(--accent-soft)}
+.tn .row.hit{background:var(--hl)}
+.tn .id{font:11px ui-monospace,monospace;color:var(--muted)}
+.tn .pg{font-size:11px;color:var(--muted);white-space:nowrap}
+.tn .tg{width:12px;color:var(--muted);flex:none}
+.tn .sum{font-size:12px;color:var(--muted);margin:2px 0 4px 34px;display:none}
+.tn.open>.sum{display:block}
+.tn .kids{margin-left:14px;border-left:1px dashed var(--line);padding-left:4px}
+.tn.fold>.kids{display:none}
+.q{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.q textarea{flex:1 1 100%;min-height:56px;resize:vertical;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px}
+.ans{white-space:pre-wrap;line-height:1.65}
+.cite{display:inline-block;font:11px ui-monospace,monospace;background:var(--accent-soft);color:var(--accent);border-radius:4px;padding:0 4px;margin:0 1px;cursor:pointer}
+.box{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:8px 0}
+.box h3{font-size:12px;margin:0 0 4px;color:var(--muted);font-weight:600}
+.think{font-size:12px;color:var(--muted)}
+.hitn{font-size:13px;padding:3px 0;cursor:pointer}
+.hitn:hover{color:var(--accent)}
+.viewer img{width:100%;border:1px solid var(--line);border-radius:4px;background:#fff}
+.meta{font-size:12px;color:var(--muted)}
+.empty{color:var(--muted);padding:20px;text-align:center}
+.tl{position:relative;padding-left:4px}
+.step{border:1px solid var(--line);border-radius:8px;margin:8px 0;background:var(--panel);overflow:hidden}
+.step .hd{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:13px;border-bottom:1px solid transparent}
+.step.open .hd{border-bottom-color:var(--line)}
+.step .ic{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;background:var(--accent-soft);color:var(--accent);flex:none}
+.step.run .ic{animation:pulse 1s ease-in-out infinite}
+.step.done .ic{background:var(--accent);color:#fff}
+.step.warn .ic{background:#d98a00;color:#fff}
+@keyframes pulse{50%{opacity:.35}}
+.step .tm{margin-left:auto;font:11px ui-monospace,monospace;color:var(--muted)}
+.step .bd{padding:8px 10px;font-size:13px}
+.step .bd:empty{display:none}
+.sub{border-left:2px solid var(--line);padding:2px 0 6px 10px;margin:6px 0}
+.sub .nm{font-weight:600;font-size:12.5px}
+.badge{display:inline-block;font:11px ui-monospace,monospace;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:3px 0}
+.nchip{display:inline-block;font-size:12px;background:var(--hl);border-radius:4px;padding:1px 6px;margin:2px 4px 2px 0;cursor:pointer}
+.nchip i{font-style:normal;color:var(--muted);font-size:11px}
+.spin{color:var(--muted);font-size:12px}
+.spin::after{content:"";display:inline-block;width:10px;height:10px;margin-left:6px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:rot .8s linear infinite;vertical-align:-1px}
+@keyframes rot{to{transform:rotate(360deg)}}
+.caret::after{content:"▍";color:var(--accent);animation:pulse .8s infinite}
+.sample{font:11.5px ui-monospace,monospace;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wf{margin-top:6px}
+.wf .row{display:grid;grid-template-columns:150px 1fr 54px;gap:8px;align-items:center;font-size:11.5px;margin:3px 0}
+.wf .lab{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.wf .track{position:relative;height:14px;background:var(--bg);border-radius:3px}
+.wf .seg{position:absolute;top:0;height:100%}
+.wf .s-wait{background:var(--line)}.wf .s-ttft{background:#9db7f5}.wf .s-dec{background:var(--accent)}
+@media (prefers-color-scheme: dark){.wf .s-ttft{background:#3c5a9e}}
+.wf .num{text-align:right;font:11px ui-monospace,monospace;color:var(--muted)}
+.legend{display:flex;gap:12px;font-size:11.5px;color:var(--muted);margin:6px 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.verdict{font-size:12.5px;margin-top:8px;line-height:1.6}
+.modal{position:fixed;inset:0;background:rgba(10,14,20,.55);display:none;align-items:flex-start;justify-content:center;z-index:50;overflow:auto;padding:24px 16px}
+.modal.on{display:flex}
+.modal .pane{background:var(--panel);border-radius:10px;max-width:900px;width:100%;padding:12px 14px;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.modal .pane h3{margin:0 0 6px;font-size:14px;display:flex;gap:10px;align-items:center}
+.modal .pane h3 .x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:20px;line-height:1}
+.modal img{width:100%;border:1px solid var(--line);border-radius:4px;background:#fff}
+.modal .quote{font-size:12.5px;color:var(--muted);border-left:3px solid #f2a33a;padding:2px 8px;margin:6px 0 10px}
+</style>
+</head>
+<body>
+<header><h1>pidx</h1><span>PDF → 树索引 → LLM 推理检索（无向量、无切块）</span>
+  <nav><a href="./" class="on">演示</a><a href="pipeline">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
+<main>
+  <section>
+    <h2>文档 <span id="cnt"></span></h2>
+    <div class="up"><input type="file" id="file" accept="application/pdf"></div>
+    <div class="scroll" id="docs"></div>
+  </section>
+  <section>
+    <h2><span id="treeTitle">树索引</span><span class="meta" id="treeMeta"></span></h2>
+    <div class="scroll" id="tree"><div class="empty">选择左侧文档</div></div>
+  </section>
+  <section>
+    <h2>检索 / 问答</h2>
+    <div class="q">
+      <textarea id="query" placeholder="问一个关于文档的问题…"></textarea>
+      <label><input type="checkbox" id="all"> 搜全部文档</label>
+      <label><input type="checkbox" id="ans" checked> 生成答案</label>
+      <label>模型 <select id="llm" style="font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px"></select></label>
+      <span style="flex:1"></span>
+      <button id="go">检索</button>
+    </div>
+    <div class="sugg" id="sugg"></div>
+    <div class="scroll" id="out"><div class="empty">答案、命中节点、引用定位会显示在这里</div></div>
+  </section>
+</main>
+<div class="modal" id="modal"><div class="pane" id="modalPane"></div></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let cur = null, docsCache = [];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function loadDocs() {
+  const {documents, total} = await api("v1/documents?limit=200");
+  docsCache = documents;
+  renderSugg();
+  $("#cnt").textContent = total;
+  $("#docs").innerHTML = documents.map(d => `
+    <div class="doc ${cur===d.id?"sel":""}" data-id="${d.id}">
+      <div class="n">${esc(d.name)}</div>
+      <div class="m"><span class="st-${d.status}">${d.status}</span> · ${d.pageNum ?? "?"} 页${d.info ? " · " + d.info.nodes + " 节点 · " + d.info.method : ""}</div>
+    </div>`).join("") || '<div class="empty">上传一个 PDF</div>';
+  document.querySelectorAll(".doc").forEach(el => el.onclick = () => selectDoc(el.dataset.id));
+  if (documents.some(d => d.status === "queued" || d.status === "processing")) setTimeout(loadDocs, 3000);
+  if (cur && documents.find(d => d.id === cur)?.status === "completed" && !$("#tree .tn")) selectDoc(cur);
+}
+
+async function selectDoc(id) {
+  cur = id;
+  renderSugg();
+  document.querySelectorAll(".doc").forEach(el => el.classList.toggle("sel", el.dataset.id === id));
+  const d = docsCache.find(x => x.id === id);
+  $("#treeTitle").textContent = d?.name || "树索引";
+  if (d?.status !== "completed" && !d?.info) { $("#tree").innerHTML = `<div class="empty">${esc(d?.status)}… ${esc(d?.error||"")}</div>`; $("#treeMeta").textContent=""; return; }
+  const t = await api(`v1/documents/${id}/tree?node_summary=true`);
+  const i = d.info || {};
+  $("#treeMeta").textContent = `${i.method} · ${i.nodes} 节点 · ${i.seconds ? Object.values(i.seconds).reduce((a,b)=>a+b,0).toFixed(0)+"s" : ""}`;
+  $("#tree").innerHTML = (d.description ? `<div class="box"><h3>文档描述</h3>${esc(d.description)}</div>` : "") + t.result.map(renderNode).join("");
+  document.querySelectorAll("#tree .row").forEach(r => r.onclick = e => {
+    const tn = r.parentElement;
+    if (e.target.classList.contains("tg") && tn.querySelector(".kids")) tn.classList.toggle("fold");
+    else { tn.classList.toggle("open"); showPage(cur, +r.dataset.page, []); }
+  });
+}
+
+function renderNode(n) {
+  const kids = n.nodes?.length ? `<div class="kids">${n.nodes.map(renderNode).join("")}</div>` : "";
+  const pg = n.start_index === n.end_index ? `p.${n.start_index}` : `p.${n.start_index}–${n.end_index}`;
+  return `<div class="tn" data-node="${n.node_id}">
+    <div class="row" data-page="${n.start_index}"><span class="tg">${n.nodes?.length ? "▾" : "·"}</span><span class="id">${n.node_id}</span><span>${esc(n.title)}</span><span class="pg">${pg}</span></div>
+    <div class="sum">${esc(n.summary || n.prefix_summary || "")}</div>${kids}</div>`;
+}
+
+// [doc:block] tags -> clickable chips. Resolvable while streaming: doc index -> selected docs, page from the id.
+let qDocs = [];
+function renderAnswer(text, streaming) {
+  if (streaming) text = text.replace(/\[[^\]]*$/, "");          // hide a half-written tag
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\[((\d+):p(\d+)_b\d+)\]/g, (m, tag, di, pg) => qDocs[+di - 1] ? `<span class="cite" data-tag="${tag}">p.${pg}</span>` : "");
+}
+function citeFromTag(tag) {
+  const [di, bid] = tag.split(":");
+  return {doc_id: qDocs[+di - 1]?.doc_id, block_id: bid, page: +bid.slice(1).split("_")[0]};
+}
+document.addEventListener("click", e => {
+  const c = e.target.closest(".cite");
+  if (c) {
+    const x = citeFromTag(c.dataset.tag);
+    const box = c.closest(".ans");
+    const same = [...box.querySelectorAll(".cite")].map(el => citeFromTag(el.dataset.tag))
+      .filter(y => y.doc_id === x.doc_id && y.page === x.page).map(y => y.block_id);
+    const sentence = (box.textContent.split(/(?<=[.。!?！？])\s/).find(s => s.includes("p." + x.page)) || "");
+    showPage(x.doc_id, x.page, [...new Set(same)], sentence);
+  }
+  const n = e.target.closest(".nchip");
+  if (n) showPage(n.dataset.doc, +n.dataset.page, []);
+});
+
+let SUGG = {}, curWhy = "";
+fetch("static/suggestions.json").then(r => r.json()).then(j => { SUGG = j; renderSugg(); });
+
+function renderSugg() {
+  const name = docsCache.find(d => d.id === cur)?.name;
+  const mine = (SUGG[name] || []).map(s => ({...s, all: false}));
+  const all = (SUGG.all || []).map(s => ({...s, all: true}));
+  const list = [...mine, ...all];
+  $("#sugg").style.display = list.length ? "" : "none";
+  $("#sugg").innerHTML = `<div class="lbl">推荐问题（点击直接运行${mine.length ? "" : "；左侧选中演示文档会出现更多"}）</div>` +
+    list.map((s, i) => `<button class="chip" data-i="${i}" title="${esc(s.why)}"><b>${esc(s.tag)}${s.all ? " · 全库" : ""}</b><span>${esc(s.q)}</span></button>`).join("");
+  document.querySelectorAll(".chip").forEach(el => el.onclick = () => {
+    const s = list[+el.dataset.i];
+    $("#query").value = s.q; $("#all").checked = s.all; curWhy = `<b>${esc(s.tag)}</b>：${esc(s.why)}`;
+    run(true);
+  });
+}
+
+// ---------------------------------------------------------------- live run (SSE)
+let ticker = null;
+const T = t => (t ?? 0).toFixed(1) + "s";
+function step(id, icon, title) {
+  let el = document.getElementById(id);
+  if (!el) {
+    $("#tl").insertAdjacentHTML("beforeend", `<div class="step run open" id="${id}"><div class="hd"><span class="ic">${icon}</span><b>${title}</b><span class="tm"></span></div><div class="bd"></div></div>`);
+    el = document.getElementById(id);
+    el.scrollIntoView({behavior: "smooth", block: "nearest"});
+  }
+  return el;
+}
+const finish = (el, t, cls = "done") => { el.classList.remove("run"); el.classList.add(cls); if (t !== undefined) el.querySelector(".tm").textContent = "t=" + T(t); };
+const llmBadge = c => `<span class="badge">LLM · 排队+预填充 ${T(c.ttft_ms/1000)} · 生成 ${c.completion_tokens} tok / ${T(c.decode_ms/1000)}（${c.tok_per_s} tok/s）· 输入 ${c.prompt_tokens} tok</span>`;
+const slug = s => s.replace(/[^\w]/g, "_");
+
+async function run(fromChip) {
+  if (fromChip !== true) curWhy = "";
+  const q = $("#query").value.trim();
+  if (!q) return;
+  if (!$("#all").checked && !cur) { alert("先选一个文档，或勾选“搜全部文档”"); return; }
+  $("#go").disabled = true;
+  document.querySelectorAll("#tree .row.hit").forEach(el => el.classList.remove("hit"));
+  $("#out").innerHTML = `${curWhy ? `<div class="why">${curWhy}</div>` : ""}<div class="tl" id="tl"></div>`;
+  const t0 = performance.now();
+  const head = step("st-q", "?", "问题");
+  head.querySelector(".bd").textContent = q;
+  ticker = setInterval(() => head.querySelector(".tm").textContent = "已用 " + T((performance.now() - t0) / 1000), 200);
+  qDocs = [];
+  let ansText = "", answerOn = $("#ans").checked, round = 1;
+  try {
+    const resp = await fetch("v1/search/stream", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({query: q, doc_ids: $("#all").checked ? null : [cur], answer: answerOn, top_k: 5, include_text: false, llm: $("#llm").value || null})});
+    if (!resp.ok) throw new Error(await resp.text());
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let k;
+      while ((k = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, k); buf = buf.slice(k + 2);
+        if (line.startsWith("data:")) onEvent(JSON.parse(line.slice(5)));
+      }
+    }
+  } catch (e) {
+    $("#tl").insertAdjacentHTML("beforeend", `<div class="empty">出错：${esc(String(e))}</div>`);
+  } finally {
+    clearInterval(ticker); finish(head);
+    $("#go").disabled = false;
+  }
+
+  function onEvent(ev) {
+    const t = ev.t;
+    switch (ev.type) {
+    case "start": {
+      head.querySelector(".bd").innerHTML = `${esc(q)}<div class="meta">检索范围：${ev.library.length} 份文档 · 模型：${esc(ev.llm)}</div>`;
+      if (ev.library.length > 1)
+        step("st-docs", "1", "选文档：LLM 读文档描述，决定查哪几份").querySelector(".bd").innerHTML = '<div class="spin">正在读 ' + ev.library.length + ' 份文档的描述</div><div class="llm"></div>';
+      break; }
+    case "llm": {
+      const lab = ev.label;
+      let el = lab.startsWith("选文档") ? document.getElementById("st-docs")
+             : lab.startsWith("作答") ? document.getElementById("st-ans-" + round)
+             : document.getElementById(`ts-${round}-${slug(lab.split(" · ")[1] || "")}`);
+      if (el) (el.querySelector(".llm") || el.querySelector(".bd") || el).insertAdjacentHTML("beforeend", llmBadge(ev) + " ");
+      break; }
+    case "docs": {
+      qDocs = ev.selected;
+      if (ev.skipped) break;
+      const el = step("st-docs", "1", "选文档：LLM 读文档描述，决定查哪几份");
+      el.querySelector(".spin")?.remove();
+      el.querySelector(".bd").insertAdjacentHTML("afterbegin",
+        `<div class="think">${esc(ev.thinking)}</div><div>选中：${ev.selected.map(d => `<span class="nchip">${esc(d.name)}</span>`).join("")}</div>`);
+      finish(el, t);
+      break; }
+    case "tree_search_start": {
+      round = ev.round;
+      const el = step("st-tree-" + round, "2", round > 1 ? `树检索 · 第 ${round} 轮（补搜）` : "树检索：LLM 读整棵树的标题 + 摘要，推理答案在哪");
+      el.querySelector(".bd").innerHTML = ev.docs.map(n => `<div class="sub" id="ts-${round}-${slug(n)}"><div class="nm">${esc(n)}</div><div class="spin">正在阅读树索引</div><div class="llm"></div></div>`).join("");
+      break; }
+    case "tree_search": {
+      const sub = document.getElementById(`ts-${ev.round}-${slug(ev.doc_name)}`);
+      const how = ev.how?.mode === "full" ? `整棵树 ≈${ev.how.tree_tokens} tok 一次读完` : `大树分层展开：${(ev.how?.expanded || []).join(", ") || "未展开"}`;
+      sub.querySelector(".spin").outerHTML = `<div class="meta">${how}</div><div class="think">${esc(ev.thinking)}</div>
+        <div>${ev.nodes.map(n => `<span class="nchip" data-doc="${n.doc_id}" data-page="${n.start_index}">[${n.node_id}] ${esc(n.title)} <i>p.${n.start_index}–${n.end_index}</i></span>`).join("") || '<span class="meta">没有相关节点</span>'}</div>`;
+      if (ev.doc_id === cur) markTree(ev.nodes.map(n => n.node_id));
+      const st = document.getElementById("st-tree-" + ev.round);
+      if (!st.querySelector(".spin")) finish(st, t);
+      break; }
+    case "read": {
+      const el = step("st-read-" + round, "3", "读原文：取出命中节点的版面块，逐块打上引用标签");
+      el.querySelector(".bd").innerHTML = `${ev.nodes.length} 个节点 · ${ev.blocks} 个版面块 · ≈${ev.context_tokens} tok 原文送入 LLM
+        ${ev.sample.map(x => `<div class="sample">${esc(x)}</div>`).join("")}`;
+      finish(el, t);
+      break; }
+    case "answer_start": {
+      const el = step("st-ans-" + round, "4", "作答：只依据原文，逐句附引用（流式输出）");
+      el.querySelector(".bd").innerHTML = `<div class="ans caret"></div><div class="llm"></div>`;
+      ansText = "";
+      break; }
+    case "answer_delta": {
+      ansText += ev.text;
+      document.querySelector(`#st-ans-${round} .ans`).innerHTML = renderAnswer(ansText, true);
+      break; }
+    case "answer_done": {
+      const el = document.getElementById("st-ans-" + round);
+      const a = el.querySelector(".ans");
+      a.classList.remove("caret");
+      a.innerHTML = renderAnswer(ev.answer, false);
+      el.querySelector(".bd").insertAdjacentHTML("beforeend",
+        `<div class="meta">${ev.citations.length} 处引用 · 点 <span class="cite">p.N</span> 在原页上高亮${ev.sufficient ? "" : " · ⚠ 证据不足"}</div>`);
+      finish(el, t, ev.sufficient ? "done" : "warn");
+      break; }
+    case "insufficient": {
+      const el = step("st-miss-" + ev.round, "↻", "证据不足 → 补搜");
+      el.querySelector(".bd").innerHTML = `缺：${esc(ev.missing)}<div class="meta">排除已读节点，带着"缺什么"再做一轮树检索</div>`;
+      finish(el, t, "warn");
+      break; }
+    case "done": {
+      const r = ev.result;
+      if (r.error) { $("#tl").insertAdjacentHTML("beforeend", `<div class="empty">${esc(r.error)}</div>`); break; }
+      if (!answerOn) {
+        const el = step("st-nodes", "✓", "命中节点（未生成答案）");
+        el.querySelector(".bd").innerHTML = r.nodes.map(n => `<span class="nchip" data-doc="${n.doc_id}" data-page="${n.start_index}">[${n.node_id}] ${esc(n.title)} <i>${esc(n.doc_name)} p.${n.start_index}–${n.end_index}</i></span>`).join("");
+        finish(el);
+      }
+      const el = step("st-time", "⏱", `耗时 ${T(r.seconds)} 花在哪`);
+      el.querySelector(".bd").innerHTML = waterfall(r.timing);
+      finish(el);
+      break; }
+    case "error":
+      $("#tl").insertAdjacentHTML("beforeend", `<div class="empty">出错：${esc(ev.message)}</div>`);
+    }
+  }
+}
+
+function markTree(ids) {
+  let first = null;
+  document.querySelectorAll("#tree .tn").forEach(tn => {
+    if (ids.includes(tn.dataset.node)) {
+      tn.querySelector(".row").classList.add("hit");
+      for (let p = tn.parentElement.closest(".tn"); p; p = p.parentElement.closest(".tn")) p.classList.remove("fold");
+      first = first || tn;
+    }
+  });
+  first?.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+function waterfall(tm) {
+  const total = Math.max(tm.total_s, 0.1), pct = x => (x / total * 100).toFixed(2) + "%";
+  const rows = tm.calls.map(c => {
+    const w = c.wait_ms / 1000, f = c.ttft_ms / 1000, d = c.decode_ms / 1000;
+    return `<div class="row"><span class="lab" title="${esc(c.label)}">${esc(c.label)}</span><div class="track">
+      <div class="seg s-wait" style="left:${pct(c.start)};width:${pct(w)}"></div>
+      <div class="seg s-ttft" style="left:${pct(c.start + w)};width:${pct(f)}"></div>
+      <div class="seg s-dec" style="left:${pct(c.start + w + f)};width:${pct(d)}"></div></div>
+      <span class="num">${T(w + f + d)}</span></div>`;
+  }).join("");
+  const s = tm.llm_sum, busy = s.ttft_s + s.decode_s + s.wait_s;
+  const thinkOut = tm.calls.filter(c => !c.label.startsWith("作答")).reduce((a, c) => a + c.completion_tokens, 0);
+  const thinkDec = tm.calls.filter(c => !c.label.startsWith("作答")).reduce((a, c) => a + c.decode_ms, 0) / 1000;
+  return `<div class="legend"><span><i style="background:#9db7f5"></i>排队 + 预填充（首 token 前）</span><span><i style="background:var(--accent)"></i>逐 token 生成</span></div>
+    <div class="wf">${rows}</div>
+    <div class="verdict">LLM 调用 ${tm.calls.length} 次（并行的会重叠）。累计：首 token 前 <b>${T(s.ttft_s)}</b>，生成 <b>${T(s.decode_s)}</b>
+    （${busy ? Math.round(s.decode_s / busy * 100) : 0}% 在生成，共 ${s.completion_tokens} 个输出 token，输入 ${s.prompt_tokens} token）。
+    其中选文档 / 树检索输出 ${thinkOut} token、生成用了 ${T(thinkDec)}，大部分是 LLM 写的推理说明。</div>`;
+}
+
+function showPage(docId, page, blocks, text) {
+  const name = docsCache.find(d => d.id === docId)?.name || docId;
+  $("#modalPane").innerHTML = `<h3>${esc(name)} · 第 ${page} 页 <a href="v1/documents/${docId}/file#page=${page}" target="_blank">打开 PDF</a>
+      ${blocks.length ? `<span class="meta">高亮 ${blocks.length} 个引用块</span>` : ""}<span class="x" title="关闭">×</span></h3>
+    ${text ? `<div class="quote">${esc(text.slice(0, 400))}</div>` : ""}
+    <img src="v1/documents/${docId}/pages/${page}/image?zoom=2&highlight=${blocks.join(",")}" alt="page ${page}">`;
+  $("#modal").classList.add("on");
+}
+$("#modal").onclick = e => { if (e.target.id === "modal" || e.target.classList.contains("x")) $("#modal").classList.remove("on"); };
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.remove("on"); });
+
+$("#go").onclick = () => run();
+$("#query").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run(); });
+$("#file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  const r = await api("v1/documents", {method: "POST", body: fd});
+  cur = r.doc_id; e.target.value = ""; loadDocs();
+};
+fetch("v1/llm").then(r => r.json()).then(j => {
+  $("#llm").innerHTML = j.backends.map(b => `<option value="${b.name}" ${b.name === j.default ? "selected" : ""}>${esc(b.label)}</option>`).join("");
+});
+loadDocs();
+</script>
+</body>
+</html>

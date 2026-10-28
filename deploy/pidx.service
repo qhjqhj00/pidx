@@ -1,0 +1,17 @@
+# systemd 用户服务示例：
+#   mkdir -p ~/.config/systemd/user && cp deploy/pidx.service ~/.config/systemd/user/
+#   （按需修改 WorkingDirectory）
+#   systemctl --user daemon-reload && systemctl --user enable --now pidx
+#   journalctl --user -u pidx -f
+[Unit]
+Description=pidx tree-index RAG service
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/workspace/pageindex
+ExecStart=%h/workspace/pageindex/.venv/bin/python -m pidx serve --port 8890
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

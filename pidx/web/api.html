@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pidx API</title>
+<link rel="stylesheet" href="static/page.css">
+</head>
+<body>
+<header><h1>pidx</h1><span>PDF → 树索引 → LLM 推理检索（无向量、无切块）</span>
+  <nav><a href="./">演示</a><a href="pipeline">Pipeline</a><a href="api-docs" class="on">接口文档</a></nav></header>
+
+<div class="layout">
+<aside class="toc">
+  <a href="#basics">约定</a>
+  <a href="#quick">快速上手</a>
+  <a href="#docs">文档</a>
+  <a class="sub" href="#submit">上传</a>
+  <a class="sub" href="#list">列表</a>
+  <a class="sub" href="#get">详情 / 状态</a>
+  <a class="sub" href="#reindex">重建索引</a>
+  <a class="sub" href="#delete">删除</a>
+  <a href="#content">内容</a>
+  <a class="sub" href="#tree">树</a>
+  <a class="sub" href="#pages">页文本</a>
+  <a class="sub" href="#block">版面块</a>
+  <a class="sub" href="#image">页图 / 原文件</a>
+  <a href="#search">检索</a>
+  <a class="sub" href="#stream">流式检索</a>
+  <a href="#errors">错误</a>
+  <a href="#mcp">MCP / CLI</a>
+  <a href="#config">配置</a>
+</aside>
+
+<main>
+<h2 id="basics">约定</h2>
+<p class="lead">REST + JSON。接口形状和 PageIndex SDK 的 <code>submit_document / get_tree / get_page_content / get_block</code> 对应，另外加了 <code>/v1/search</code>。</p>
+<table>
+  <tr><th style="width:150px">项</th><th>说明</th></tr>
+  <tr><td>Base URL</td><td>就是当前页面所在的地址（去掉 <code>/api-docs</code>）。本机默认 <code>http://127.0.0.1:8890</code>。<br>经反代挂到公网时（见 README「部署」），需要 token：浏览器用 <code>?token=…</code> 打开一次即可（之后靠 cookie），程序调用用 <code>Authorization: Bearer &lt;token&gt;</code>。本机 / 内网直连不需要 token。</td></tr>
+  <tr><td>doc_id</td><td><code>pi-</code> 加 12 位十六进制，例如 <code>pi-48b6064602a4</code>。</td></tr>
+  <tr><td>状态</td><td><code>queued</code> → <code>processing</code> → <code>completed</code> / <code>failed</code>。重建索引期间仍然用旧树提供 tree 和 search，新树建好后整体替换。</td></tr>
+  <tr><td>页码</td><td>从 1 开始的物理页码（第几页 PDF 页面），不是印在页面上的页码。</td></tr>
+  <tr><td>节点</td><td><code>node_id</code> 是 4 位字符串，按先序遍历编号（<code>"0000"</code> 起）；<code>start_index / end_index</code> 是节点覆盖的页码范围（含子节点）。</td></tr>
+  <tr><td>版面块</td><td><code>block_id</code> 形如 <code>p42_b2</code>（第 42 页第 2 块）。<code>bbox = [x0, y0, x1, y1]</code>，单位是页面宽 / 高的千分之一，原点在左上角，和 PageIndex 一致。</td></tr>
+  <tr><td>耗时</td><td>建索引是异步的，大约每页 0.3–1 秒，扫描件要慢得多。检索用 DeepSeek 时通常 2–8 秒，用 Atria 时 15–75 秒，客户端超时建议设到 ≥300 秒。</td></tr>
+</table>
+
+<h2 id="quick">快速上手</h2>
+<pre><code>BASE=http://127.0.0.1:8890   # 或你的部署地址
+
+# 1. 上传
+curl -F file=@report.pdf $BASE/v1/documents
+# → {"doc_id":"pi-48b6064602a4","name":"report.pdf","status":"queued"}
+
+# 2. 轮询，直到 status = completed
+curl $BASE/v1/documents/pi-48b6064602a4
+
+# 3. 提问
+curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
+  "query": "How many formal enforcement actions did the Federal Reserve complete in 2023?",
+  "doc_ids": ["pi-48b6064602a4"], "answer": true, "include_text": false }'</code></pre>
+
+<h2 id="docs">文档</h2>
+
+<div class="ep" id="submit"><span class="m post">POST</span><h3>/v1/documents</h3></div>
+<p>上传一个 PDF，立刻返回 <code>doc_id</code>，索引在后台建立。请求格式是 <code>multipart/form-data</code>。</p>
+<table>
+  <tr><th>字段</th><th>类型</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>file</code></td><td>file</td><td>必填</td><td>PDF 文件（只支持 PDF）。</td></tr>
+  <tr><td><code>mode</code></td><td>string</td><td><code>auto</code></td><td><code>auto</code>：每页少于 80 字符时自动走 OCR；<code>text</code>：只用文本层；<code>ocr</code>：强制走 MinerU。</td></tr>
+  <tr><td><code>summary</code></td><td>bool</td><td><code>true</code></td><td>是否生成节点摘要。关掉能省掉大部分 LLM 调用，但树检索的准确度会下降。</td></tr>
+  <tr><td><code>metadata</code></td><td>JSON string</td><td><code>{}</code></td><td>自定义元数据，原样保存并返回。</td></tr>
+</table>
+<pre><code>{"doc_id": "pi-48b6064602a4", "name": "2023-annual-report.pdf", "status": "queued"}</code></pre>
+<p class="muted">如果重名，会自动改名为 <code>name_1.pdf</code>、<code>name_2.pdf</code>……</p>
+
+<div class="ep" id="list"><span class="m get">GET</span><h3>/v1/documents</h3></div>
+<p>参数：<code>limit</code>（1–10000，默认 50）、<code>offset</code>。按创建时间倒序。</p>
+<pre><code>{"documents": [ {…同下方详情…} ], "total": 4, "limit": 50, "offset": 0}</code></pre>
+
+<div class="ep" id="get"><span class="m get">GET</span><h3>/v1/documents/{doc_id}</h3></div>
+<p>文档信息和状态。<code>info</code> 里是建索引的诊断信息。</p>
+<pre><code>{
+  "id": "pi-8c61a88a0be0",
+  "name": "q1-fy25-earnings.pdf",
+  "status": "completed",
+  "error": null,                       // failed 时是错误信息
+  "pageNum": 22,
+  "description": "This document is a quarterly earnings press release issued by The Walt Disney Company …",
+  "metadata": {},
+  "createdAt": 1793170384.02,
+  "info": {
+    "parser": "pymupdf",               // pymupdf | mineru
+    "method": "layout+llm",            // bookmarks | layout+llm | llm-pages | page-groups
+    "candidates": 26,                  // 版面标题候选数
+    "nodes": 26,
+    "body_size": 12.0,                 // 正文字号
+    "seconds": {"parse": 0.5, "tree": 30.9, "summary": 77.9},
+    "llm": {"calls": 26, "prompt_tokens": 14517, "completion_tokens": 3362}
+  }
+}</code></pre>
+
+<div class="ep" id="reindex"><span class="m post">POST</span><h3>/v1/documents/{doc_id}/reindex</h3></div>
+<p>重新建索引。可选 query 参数 <code>mode</code>、<code>summary</code>，传了就覆盖上传时的设置。重建期间旧树继续可用。</p>
+<pre><code>{"doc_id": "pi-48b6064602a4", "status": "queued"}</code></pre>
+
+<div class="ep" id="delete"><span class="m del">DELETE</span><h3>/v1/documents/{doc_id}</h3></div>
+<p>删除文档，同时删除它的页、块、树和原文件。</p>
+<pre><code>{"message": "Document deleted successfully."}</code></pre>
+
+<h2 id="content">内容</h2>
+
+<div class="ep" id="tree"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/tree</h3></div>
+<table>
+  <tr><th>参数</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>node_summary</code></td><td><code>false</code></td><td>叶子节点带 <code>summary</code>，父节点带 <code>prefix_summary</code>（对应标题到第一个子节点之间的引言）。</td></tr>
+  <tr><td><code>include_text</code></td><td><code>false</code></td><td>带上节点自己的原文 <code>text</code>（父节点只含引言部分，不重复子节点的内容）。</td></tr>
+</table>
+<pre><code>{
+  "doc_id": "pi-48b6064602a4",
+  "status": "completed",
+  "result": [
+    {
+      "title": "2 Monetary Policy and Economic Developments",
+      "node_id": "0003",
+      "page_index": 9,                 // = start_index，兼容 PageIndex 的字段名
+      "start_index": 9,
+      "end_index": 20,
+      "prefix_summary": "This section reviews 2023 U.S. monetary policy and economic developments …",
+      "nodes": [
+        {"title": "March 2024 Summary", "node_id": "0004", "page_index": 9, "start_index": 9, "end_index": 14,
+         "summary": "This section summarizes U.S. economic conditions and monetary policy from early 2022 …"},
+        …
+      ]
+    },
+    …
+  ]
+}</code></pre>
+<p class="muted">文档还没有树时（排队中或首次处理中），只返回 <code>{"doc_id", "status"}</code>。</p>
+
+<div class="ep" id="pages"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/pages?pages=5-7,9</h3></div>
+<p>页文本，已去掉页眉页脚。<code>pages</code> 支持区间和逗号分隔，例如 <code>"12"</code>、<code>"5-7"</code>、<code>"3,8"</code>。</p>
+<pre><code>{"doc_id": "pi-48b6064602a4",
+ "pages": [{"page_index": 42, "markdown": "written agreements, prompt corrective action directives, …"}]}</code></pre>
+
+<div class="ep" id="block"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/blocks/{block_id}</h3></div>
+<p>单个版面块。<code>block_type</code> 可能是 <code>text</code>、<code>image</code>、<code>title</code>、<code>table</code>……（后三种来自 MinerU）。</p>
+<pre><code>{"doc_id": "pi-48b6064602a4", "page": 42, "block_id": "p42_b2",
+ "bbox": [147, 175, 821, 187], "block_type": "text",
+ "text": "In 2023, the Federal Reserve completed 63 formal enforcement actions. Civil money penalties"}</code></pre>
+
+<div class="ep" id="image"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/pages/{page}/image</h3></div>
+<p>页面渲染成 PNG。参数：<code>highlight</code>（逗号分隔的 block_id，在图上高亮）、<code>zoom</code>（默认 1.5）。可以直接放进 <code>&lt;img&gt;</code> 展示引用。</p>
+<pre><code>&lt;img src="$BASE/v1/documents/pi-48b6064602a4/pages/42/image?highlight=p42_b2,p42_b3"&gt;</code></pre>
+<div class="ep"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/file</h3></div>
+<p>下载原 PDF。拼上 <code>#page=N</code> 可以在浏览器里直接跳到第 N 页。</p>
+
+<h2 id="search">检索</h2>
+<div class="ep"><span class="m post">POST</span><h3>/v1/search</h3></div>
+<p>在树上做推理检索，可以顺带生成带块级引用的答案。过程见 <a href="pipeline#search">Pipeline</a>。</p>
+<table>
+  <tr><th>字段</th><th>类型</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>query</code></td><td>string</td><td>必填</td><td>问题，中英文都可以。</td></tr>
+  <tr><td><code>doc_ids</code></td><td>string[]</td><td><code>null</code></td><td>只在这些文档里搜。不传就搜全库，由 LLM 根据文档描述挑出最多 5 篇。</td></tr>
+  <tr><td><code>top_k</code></td><td>int</td><td>5</td><td>每篇文档、每轮最多选几个节点。</td></tr>
+  <tr><td><code>answer</code></td><td>bool</td><td><code>false</code></td><td><code>false</code> 时只返回命中的节点（适合把结果交给你自己的 LLM）；<code>true</code> 时额外生成答案和引用。</td></tr>
+  <tr><td><code>max_rounds</code></td><td>int</td><td>2</td><td>只在 <code>answer=true</code> 时生效：证据不足时最多再检索几轮。</td></tr>
+  <tr><td><code>include_text</code></td><td>bool</td><td><code>true</code></td><td>返回的节点是否带完整原文。</td></tr>
+  <tr><td><code>llm</code></td><td>string</td><td><code>deepseek</code></td><td>检索用哪个模型：<code>deepseek</code>（V4 Flash，快）或 <code>default</code>（建索引用的模型，默认是免费的 Atria，慢约 10 倍）。可选值见 <code>GET /v1/llm</code>。</td></tr>
+</table>
+<p>响应（<code>answer=true</code>，美联储年报的真实返回，<code>…</code> 处为删节）：</p>
+<pre><code>{
+  "query": "How many formal enforcement actions did the Federal Reserve complete in 2023, and what civil money penalties were assessed?",
+  "documents": [{"doc_id": "pi-48b6064602a4", "name": "2023-annual-report.pdf"}],
+  "reasoning": {                         // 每篇文档每轮一段，说明 LLM 为什么选这些节点
+    "pi-48b6064602a4": ["The question asks for the number of formal enforcement actions completed by the Federal Reserve in 2023 and the total civil money penalties assessed. Node [0017] Enforcement Actions (p.41-42) explicitly reports the 2023 totals … Node [0045] Flood Insurance Enforcement (p.94) is also relevant as it details a specific 2023 civil money penalty action …"]
+  },
+  "nodes": [                             // 读过的节点，按选中顺序
+    {"doc_id": "pi-48b6064602a4", "doc_name": "2023-annual-report.pdf",
+     "node_id": "0017", "title": "Enforcement Actions", "start_index": 41, "end_index": 42,
+     "summary": "…", "text": "…"},      // text 仅在 include_text=true 时返回
+    {"doc_id": "pi-48b6064602a4", "doc_name": "2023-annual-report.pdf",
+     "node_id": "0045", "title": "Flood Insurance Enforcement", "start_index": 94, "end_index": 94, …}
+  ],
+  "answer": "In 2023, the Federal Reserve completed 63 formal enforcement actions, and civil money penalties totaling $542,329,952.20 were assessed [1:p42_b2][1:p42_b3].",
+  "citations": [                         // 答案里的 [文档序号:block_id] 逐个展开
+    {"tag": "1:p42_b2", "doc_id": "pi-48b6064602a4", "doc_name": "2023-annual-report.pdf",
+     "block_id": "p42_b2", "page": 42, "bbox": [147, 175, 821, 187],
+     "text": "In 2023, the Federal Reserve completed 63 formal enforcement actions. Civil money penalties"},
+    {"tag": "1:p42_b3", "doc_id": "pi-48b6064602a4", "doc_name": "2023-annual-report.pdf",
+     "block_id": "p42_b3", "page": 42, "bbox": [147, 195, 821, 207],
+     "text": "totaling $542,329,952.20 were assessed. As directed by statute, all civil money penalties are"}
+  ],
+  "sufficient": true,                    // LLM 判断证据是否足够
+  "usage": {"calls": 2, "prompt_tokens": 15362, "completion_tokens": 242},
+  "seconds": 21.2
+}</code></pre>
+<p>响应里还有 <code>llm</code>（实际用的模型）和 <code>timing</code>：<code>phases</code> 是各阶段的墙钟时间；<code>calls</code> 是每次 LLM 调用的打点，包括 <code>ttft_ms</code>（首 token 前，含上游排队和预填充）、<code>decode_ms</code>、<code>tok_per_s</code>，以及输入、输出 token 数。</p>
+
+<div class="ep" id="stream"><span class="m post">POST</span><h3>/v1/search/stream</h3></div>
+<p>请求体和 <code>/v1/search</code> 相同，返回 Server-Sent Events，每条是 <code>data: {json}</code>。演示页的过程时间线就是用这个接口做的。</p>
+<table>
+  <tr><th>type</th><th>何时 / 内容</th></tr>
+  <tr><td><code>start</code></td><td>开始：<code>library</code>（可检索的文档）、<code>llm</code></td></tr>
+  <tr><td><code>docs</code></td><td>选完文档：<code>selected</code>、<code>thinking</code>；单文档时 <code>skipped=true</code></td></tr>
+  <tr><td><code>tree_search_start</code> / <code>tree_search</code></td><td>每轮、每篇文档的树检索：<code>thinking</code>、<code>nodes</code>、<code>how</code>（整棵树一次读完，还是分层展开）</td></tr>
+  <tr><td><code>llm</code></td><td>每次 LLM 调用结束时的打点（字段同 <code>timing.calls</code>）</td></tr>
+  <tr><td><code>read</code></td><td>送入作答的节点数、版面块数、token 数</td></tr>
+  <tr><td><code>answer_start</code> / <code>answer_delta</code> / <code>answer_done</code></td><td>答案逐段输出（<code>text</code>）；结束时给出 <code>answer</code>、<code>citations</code>、<code>sufficient</code></td></tr>
+  <tr><td><code>insufficient</code></td><td>证据不足，即将补搜：<code>missing</code></td></tr>
+  <tr><td><code>done</code></td><td>最终结果 <code>result</code>，内容同 <code>/v1/search</code> 的响应</td></tr>
+</table>
+<pre><code>curl -N -X POST $BASE/v1/search/stream -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"query":"…","answer":true}'</code></pre>
+
+<div class="ep"><span class="m get">GET</span><h3>/v1/llm</h3></div>
+<p>列出可用的检索模型和默认值。</p>
+<pre><code>{"default": "deepseek", "backends": [{"name": "default", "label": "Atria-Dawn-Preview（建索引用的模型）", "model": "Atria-Dawn-Preview"},
+                                    {"name": "deepseek", "label": "DeepSeek V4 Flash", "model": "deepseek-v4-flash"}]}</code></pre>
+
+<div class="note">答案里的引用标签是 <code>[文档序号:block_id]</code>，文档序号对应 <code>documents</code> 数组的下标加 1。前端可以把标签替换成可点击的链接，指向 <code>/pages/{page}/image?highlight={block_id}</code>。</div>
+<p>库里没有可搜的文档时返回 <code>{"query", "error": "no completed documents to search", "nodes": []}</code>。</p>
+
+<h2 id="errors">错误</h2>
+<table>
+  <tr><th>HTTP</th><th>情况</th></tr>
+  <tr><td>400</td><td>上传的不是 PDF 或无法打开；block_id 格式不对</td></tr>
+  <tr><td>404</td><td>doc_id、block 不存在，或页码超出范围</td></tr>
+  <tr><td>422</td><td>参数校验失败（FastAPI 默认格式，<code>detail</code> 里有具体字段）</td></tr>
+  <tr><td>500</td><td>LLM 连续重试后仍失败等内部错误。建索引失败不会返回 500，而是把文档状态置为 <code>failed</code> 并写入 <code>error</code></td></tr>
+</table>
+<p class="muted">调用 LLM 时遇到 429/502/503/504 会自动退避重试（优先遵守 Retry-After），最多 6 次。</p>
+
+<h2 id="mcp">MCP / CLI</h2>
+<p><b>MCP</b>（stdio）：内部调用上面的 HTTP 接口，提供 <code>list_documents</code>、<code>get_tree</code>、<code>get_pages</code>、<code>search</code> 四个工具。</p>
+<pre><code>claude mcp add pidx -e PIDX_API=http://127.0.0.1:8890 -- \
+  /path/to/pidx/.venv/bin/python -m pidx.mcp_server</code></pre>
+<p><b>CLI</b>：</p>
+<pre><code>python -m pidx serve [--port 8890]               # 或 scripts/serve.sh start|stop|restart
+python -m pidx index report.pdf [--mode ocr]     # 上传并等待索引完成
+python -m pidx tree pi-48b6064602a4
+python -m pidx ask "问题" [--doc pi-xxx ...] [--no-answer]</code></pre>
+<p class="muted">自动生成的 OpenAPI 文档在 <a href="docs">/docs</a>（Swagger UI）。</p>
+
+<h2 id="config">配置（环境变量 / .env）</h2>
+<table>
+  <tr><th>变量</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>PIDX_LLM_BASE_URL</code> / <code>_API_KEY</code> / <code>_MODEL</code></td><td>Atria 网关</td><td>建索引用的模型（backend <code>default</code>），任意 OpenAI 兼容端点。没设时回退到 <code>ATRIA_*</code> 变量。</td></tr>
+  <tr><td><code>DEEPSEEK_API_KEY</code> / <code>PIDX_DEEPSEEK_MODEL</code></td><td>— / <code>deepseek-v4-flash</code></td><td>设置了 key 才会启用 backend <code>deepseek</code>。</td></tr>
+  <tr><td><code>PIDX_SEARCH_BACKEND</code></td><td>配置了 DeepSeek key 时为 <code>deepseek</code>，否则为 <code>default</code></td><td>检索默认用哪个模型。</td></tr>
+  <tr><td><code>PIDX_PUBLIC_TOKEN</code></td><td>—</td><td>经公网反代进来的请求（带 X-Forwarded-For）必须带这个 token。</td></tr>
+  <tr><td><code>PIDX_LLM_CONCURRENCY</code></td><td>24</td><td>进程内 LLM 并发上限（Atria 每个项目上限 100）。</td></tr>
+  <tr><td><code>SILICON_FLOW_API_KEY</code> / <code>PIDX_EMBED_MODEL</code></td><td>— / <code>BAAI/bge-m3</code></td><td>向量（SiliconFlow）：建索引时给文档描述算向量，文档超过 20 篇时用来粗筛。</td></tr>
+  <tr><td><code>MINERU_API_KEY</code> / <code>PIDX_MINERU_MODEL</code></td><td>— / <code>pipeline</code></td><td>扫描件 OCR（mineru.net 云端 API，单文件最多 200 页，超出的会自动切段）。<code>PIDX_MINERU_MODEL</code> 可选 <code>pipeline</code> 或 <code>vlm</code>。</td></tr>
+  <tr><td><code>PIDX_MINERU_URL</code></td><td>—</td><td>设置后改用自建的 MinerU 服务（例如 spark-0:8880），不再调用云端。</td></tr>
+  <tr><td><code>PIDX_MAX_PAGES_PER_NODE</code> / <code>_TOKENS_</code></td><td>10 / 20000</td><td>超过阈值的叶子节点会被继续拆分。</td></tr>
+  <tr><td><code>PIDX_MAX_SPLIT_DEPTH</code></td><td>3</td><td>递归拆分的最大深度。</td></tr>
+  <tr><td><code>PIDX_INDEX_WORKERS</code></td><td>2</td><td>同时建索引的文档数。</td></tr>
+  <tr><td><code>PIDX_DATA_DIR</code></td><td><code>./data</code></td><td>SQLite 数据库和原 PDF 的存放位置。</td></tr>
+</table>
+</main>
+</div>
+</body>
+</html>

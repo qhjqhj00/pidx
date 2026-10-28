@@ -1,0 +1,23 @@
+# 把 pidx 挂到已有站点的子路径下（例：https://example.com/pageindex/），经内网 / tailnet 反代到 pidx。
+# 访问控制在 pidx 自己做：反代进来的请求（带 X-Forwarded-For）必须带 PIDX_PUBLIC_TOKEN，
+# 浏览器用 https://example.com/pageindex/?token=<token> 打开一次即可（之后走 cookie）。
+example.com {
+	# 答案是 SSE 流式输出，不能被压缩缓冲，所以 /pageindex 不参与压缩
+	@compressible not path /pageindex /pageindex/*
+	encode @compressible zstd gzip
+
+	redir /pageindex /pageindex/ 308
+	handle_path /pageindex/* {
+		request_body {
+			max_size 100MB
+		}
+		reverse_proxy 127.0.0.1:8890 {
+			header_up X-Forwarded-For {remote_host}
+			flush_interval -1
+		}
+	}
+
+	handle {
+		# ... 站点原有的配置
+	}
+}

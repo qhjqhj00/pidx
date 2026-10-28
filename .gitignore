@@ -1,0 +1,11 @@
+# secrets
+.env
+# runtime data: SQLite DB + uploaded PDFs, logs, downloaded samples
+data/
+logs/
+samples/*.pdf
+# local reference checkout of VectifyAI/PageIndex
+ref/
+.venv/
+__pycache__/
+*.pyc

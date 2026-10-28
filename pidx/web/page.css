@@ -1,0 +1,45 @@
+/* Shared style for the documentation pages (pipeline, api-docs). */
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1b1f24;--muted:#646d78;--line:#e2e5ea;--accent:#2457d6;--accent-soft:#e8eefc;--code:#f1f3f6;--ok:#1f8a4c;--warn:#b26a00;--s1:#2457d6;--s2:#0f8a7a;--s3:#8a4fd6;--s4:#c26a00}
+@media (prefers-color-scheme: dark){:root{--bg:#111418;--panel:#191d23;--ink:#e6e9ee;--muted:#98a1ad;--line:#2a3039;--accent:#7aa2ff;--accent-soft:#1f2a44;--code:#20252d;--ok:#4cc38a;--warn:#e0a040;--s1:#7aa2ff;--s2:#4cc3b0;--s3:#b48cff;--s4:#f0a050}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0}
+header span{color:var(--muted);font-size:12px}
+header nav{margin-left:auto;display:flex;gap:4px}
+header nav a{color:var(--muted);text-decoration:none;font-size:13px;padding:4px 10px;border-radius:6px}
+header nav a:hover{background:var(--accent-soft);color:var(--accent)}
+header nav a.on{color:var(--accent);background:var(--accent-soft);font-weight:600}
+.wrap{max-width:980px;margin:0 auto;padding:24px 16px 80px}
+.layout{display:grid;grid-template-columns:200px minmax(0,1fr);gap:32px;max-width:1180px;margin:0 auto;padding:24px 16px 80px}
+.toc{position:sticky;top:64px;align-self:start;font-size:13px}
+.toc a{display:block;color:var(--muted);text-decoration:none;padding:3px 0}
+.toc a:hover{color:var(--accent)}
+.toc .sub{padding-left:12px;font-size:12.5px}
+@media (max-width:820px){.layout{grid-template-columns:1fr}.toc{display:none}}
+h2{font-size:22px;margin:40px 0 8px;padding-top:8px}
+h2:first-child{margin-top:0}
+h3{font-size:17px;margin:28px 0 6px}
+p,li{color:var(--ink)}
+.lead{font-size:16.5px;color:var(--muted);margin-top:0}
+.muted{color:var(--muted)}
+a{color:var(--accent)}
+code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:auto;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;margin:8px 0 16px}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:13.5px}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12.5px}
+td code{white-space:nowrap}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:12px 0}
+.ep{display:flex;gap:10px;align-items:center;margin:28px 0 4px;flex-wrap:wrap}
+.ep h3{margin:0;font:600 15px ui-monospace,SFMono-Regular,Menlo,monospace}
+.m{font:700 11px ui-monospace,monospace;padding:2px 7px;border-radius:4px;color:#fff}
+.m.get{background:var(--ok)}.m.post{background:var(--accent)}.m.del{background:#c0392b}
+.note{border-left:3px solid var(--warn);background:var(--panel);padding:8px 12px;border-radius:0 6px 6px 0;font-size:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.stat .v{font-size:22px;font-weight:700}
+.stat .k{font-size:12px;color:var(--muted)}
+.tag{display:inline-block;font-size:11px;font-weight:600;border-radius:4px;padding:1px 6px;margin-right:4px;background:var(--accent-soft);color:var(--accent)}
+svg text{font-family:system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}
