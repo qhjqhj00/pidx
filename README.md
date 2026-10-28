@@ -36,7 +36,7 @@
 环境：Python ≥ 3.10（已在 3.12、3.14 上测过），Linux / macOS。不需要 GPU，所有模型都是调 API。Ubuntu 自带的 Python 如果报 `ensurepip is not available`，先 `sudo apt install python3.12-venv`（版本号按实际），或者用 conda / uv 的 Python。
 
 ```bash
-git clone git@github.com:qhjqhj00/pidx.git && cd pidx
+git clone https://github.com/qhjqhj00/pidx.git && cd pidx     # 或 git@github.com:qhjqhj00/pidx.git
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 cp .env.example .env          # 然后按下一节「准备 key」填 key
