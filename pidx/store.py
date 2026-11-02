@@ -31,12 +31,19 @@ CREATE TABLE IF NOT EXISTS collections (
 CREATE TABLE IF NOT EXISTS node_vectors (
   doc_id TEXT NOT NULL, node_id TEXT NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (doc_id, node_id)
 );
+CREATE TABLE IF NOT EXISTS image_vectors (
+  doc_id TEXT NOT NULL, image_id TEXT NOT NULL, page INTEGER NOT NULL, bbox TEXT, node_id TEXT,
+  caption TEXT, vec BLOB NOT NULL, PRIMARY KEY (doc_id, image_id)
+);
 """
 
 # columns added after the first release: (table, column, type)
+# documents.embed_model: the vector space of the document's vectors (llm.embed_model()); NULL on
+# documents indexed before it existed, which were all bge-m3.
 MIGRATIONS = [("documents", "format", "TEXT"), ("documents", "pdf_path", "TEXT"),
               ("documents", "collection_id", "TEXT"), ("documents", "rel_path", "TEXT"),
-              ("pages", "label", "TEXT")]
+              ("pages", "label", "TEXT"), ("documents", "embed_model", "TEXT")]
+LEGACY_EMBED_MODEL = "BAAI/bge-m3"
 
 
 def _migrate(con):
@@ -150,6 +157,7 @@ def delete_document(doc_id):
     with db() as con:
         con.execute("DELETE FROM pages WHERE doc_id=?", (doc_id,))
         con.execute("DELETE FROM node_vectors WHERE doc_id=?", (doc_id,))
+        con.execute("DELETE FROM image_vectors WHERE doc_id=?", (doc_id,))
         n = con.execute("DELETE FROM documents WHERE id=?", (doc_id,)).rowcount
     return n > 0
 
@@ -218,7 +226,36 @@ def load_node_vectors(doc_id) -> tuple[list[str], np.ndarray | None]:
     return [r[0] for r in rows], np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
 
 
-def docs_without_vectors() -> list[str]:
+def docs_needing_vectors(model: str) -> list[str]:
+    """Completed documents whose vectors are missing or from another embedding model."""
     return [r[0] for r in db().execute(
-        "SELECT id FROM documents WHERE status='completed' AND tree IS NOT NULL AND id NOT IN "
-        "(SELECT DISTINCT doc_id FROM node_vectors)")]
+        "SELECT id FROM documents WHERE status='completed' AND tree IS NOT NULL AND "
+        "(COALESCE(embed_model, ?) != ? OR id NOT IN (SELECT DISTINCT doc_id FROM node_vectors))",
+        (LEGACY_EMBED_MODEL, model))]
+
+
+def save_image_vectors(doc_id, items):
+    """items: [dict(image_id, page, bbox, node_id, caption, vec)]; replaces the document's image vectors."""
+    with db() as con:
+        con.execute("DELETE FROM image_vectors WHERE doc_id=?", (doc_id,))
+        con.executemany("INSERT INTO image_vectors VALUES (?,?,?,?,?,?,?)",
+                        [(doc_id, it["image_id"], it["page"], json.dumps(it["bbox"]), it.get("node_id"),
+                          it.get("caption") or "", np.asarray(it["vec"], dtype=np.float32).tobytes()) for it in items])
+
+
+def load_image_vectors(doc_id) -> tuple[list[dict], np.ndarray | None]:
+    rows = db().execute("SELECT image_id, page, bbox, node_id, caption, vec FROM image_vectors WHERE doc_id=?",
+                        (doc_id,)).fetchall()
+    if not rows:
+        return [], None
+    meta = [{"image_id": r[0], "page": r[1], "bbox": json.loads(r[2]) if r[2] else None, "node_id": r[3],
+             "caption": r[4]} for r in rows]
+    return meta, np.stack([np.frombuffer(r[5], dtype=np.float32) for r in rows])
+
+
+def clear_vectors(doc_id):
+    """Drop every vector of a document (used before recomputing them under another model)."""
+    with db() as con:
+        con.execute("DELETE FROM node_vectors WHERE doc_id=?", (doc_id,))
+        con.execute("DELETE FROM image_vectors WHERE doc_id=?", (doc_id,))
+        con.execute("UPDATE documents SET embedding=NULL, embed_model=NULL WHERE id=?", (doc_id,))

@@ -9,7 +9,7 @@ import logging
 import time
 import traceback
 
-from . import collection, config, llm, parse, store, tree
+from . import collection, config, images, llm, parse, store, tree
 
 log = logging.getLogger("pidx.indexer")
 
@@ -17,13 +17,14 @@ _queue: asyncio.Queue | None = None
 _coll_pending: set[str] = set()
 
 
-def node_embed_text(doc: dict, path: list[str], n: dict, pages=None) -> str:
-    """What a node vector represents: where it sits (doc, folder, title path) and what it says."""
+def node_embed_text(doc: dict, path: list[str], n: dict, pages=None) -> tuple[str, str]:
+    """What a node vector represents, as (title, text): where it sits (doc, folder, title path) and
+    what it says. llm.embed joins them for bge-m3 exactly as before, or prefixes them for Gemma."""
     where = doc["name"] if not doc.get("rel_path") else doc["rel_path"]
     s = n.get("summary") or n.get("prefix_summary") or ""
     if not s and pages is not None:
         s = tree.text_between(pages, tuple(n["start"]), tuple(n["text_end"]) if n.get("text_end") else None)[:600]
-    return f"{where}\n{' > '.join(path + [n['title']])}\n{s}".strip()
+    return f"{where}\n{' > '.join(path + [n['title']])}", s.strip()
 
 
 async def embed_nodes(doc: dict, nodes: list, pages=None) -> int:
@@ -48,6 +49,31 @@ async def embed_nodes(doc: dict, nodes: list, pages=None) -> int:
     return len(vecs)
 
 
+async def embed_images(doc: dict, nodes: list, pages: list) -> int:
+    """EmbeddingGemma path: crop image blocks and embed the crops. Returns the count (0 when off)."""
+    if not config.EMBED_MULTIMODAL:
+        return 0
+    found = await asyncio.to_thread(images.extract, doc, pages, nodes)
+    vecs = []
+    for i in range(0, len(found), 8):
+        v = await llm.embed_images([f["png"] for f in found[i:i + 8]])
+        if v is None:
+            return 0
+        vecs.extend(v)
+    store.save_image_vectors(doc["id"], [{**f, "vec": v} for f, v in zip(found, vecs)])
+    return len(vecs)
+
+
+async def embed_document(doc: dict, nodes: list, pages: list, description: str) -> dict:
+    """All vectors of a document under the current embedding model: description, nodes, images."""
+    where = doc.get("rel_path") or doc["name"]
+    emb = await llm.embed([(where, description or "")])
+    n_vec = await embed_nodes(doc, nodes, pages)
+    n_img = await embed_images(doc, nodes, pages) if n_vec else 0
+    return {"embedding": emb[0] if emb else None, "node_vectors": n_vec, "image_vectors": n_img,
+            "embed_model": llm.embed_model() if n_vec else None}
+
+
 async def index_document(doc_id: str) -> None:
     doc = store.get_document(doc_id)
     opts = doc["options"] or {}
@@ -68,16 +94,16 @@ async def index_document(doc_id: str) -> None:
     description = await tree.describe(nodes, pages, doc["name"])
     t3 = time.time()
 
-    where = doc.get("rel_path") or doc["name"]
-    emb = await llm.embed([f"{where}\n{description}"])
-    n_vec = await embed_nodes(doc, nodes, pages)
+    store.clear_vectors(doc_id)
+    ev = await embed_document(doc, nodes, pages, description)
     t4 = time.time()
-    info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec,
+    info.update(parser=parsed["parser"], format=doc["format"], node_vectors=ev["node_vectors"],
+                image_vectors=ev["image_vectors"], embed_model=ev["embed_model"],
                 seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
                          "embed": round(t4 - t3, 1)},
                 llm=used)
     store.update_document(doc_id, status="completed", tree=nodes, info=info, description=description,
-                          embedding=emb[0] if emb else None)
+                          embedding=ev["embedding"], embed_model=ev["embed_model"])
     log.info("indexed %s (%s, %d pages, %d nodes) in %.0fs", doc_id, doc["name"], len(pages), info["nodes"], t4 - t0)
 
 
@@ -118,17 +144,24 @@ async def _worker(n: int):
 
 
 async def _backfill_vectors():
-    """Documents indexed before node vectors existed get them now (cheap: embeddings only)."""
-    for doc_id in store.docs_without_vectors():
+    """Documents without vectors, or with vectors from another embedding model (bge-m3 <-> Gemma),
+    get them recomputed now. Cheap: embeddings only, the trees and summaries are kept. Until then
+    search treats such a document as having no vectors (pure tree reading)."""
+    model = llm.embed_model()
+    for doc_id in store.docs_needing_vectors(model):
         d = store.get_document(doc_id, full=True)
         try:
-            n = await embed_nodes(d, d["tree"], store.get_pages(doc_id))
+            pages = store.get_pages(doc_id)
+            store.clear_vectors(doc_id)
+            ev = await embed_document(d, d["tree"], pages, d.get("description") or "")
         except Exception:
             log.exception("vector backfill %s", doc_id)
             continue
-        if n == 0:
+        if not ev["node_vectors"]:
             return          # embedding service unavailable; try again on next start
-        log.info("backfilled %d node vectors for %s", n, d["name"])
+        store.update_document(doc_id, embedding=ev["embedding"], embed_model=ev["embed_model"])
+        log.info("backfilled %s: %d node + %d image vectors (%s)", d["name"], ev["node_vectors"],
+                 ev["image_vectors"], model)
 
 
 def start_workers():

@@ -182,15 +182,45 @@ async def chat_json(prompt: str, *, system: str | None = None, max_tokens=4096, 
     raise ValueError("LLM did not return valid JSON")
 
 
-async def embed(texts: list[str]) -> list[list[float]] | None:
-    """bge-m3 embeddings (SiliconFlow by default); returns None if the service is unavailable."""
+def embed_model() -> str:
+    """Identifies the vector space; vectors made under another value are stale and get recomputed."""
+    return config.EMBED_MODEL + ("+mm" if config.EMBED_MULTIMODAL else "")
+
+
+def _embed_text(t, kind: str) -> str:
+    """`t` is a string or a (title, text) pair. EmbeddingGemma wants task prefixes; bge-m3 takes the
+    plain text (title and text joined by a newline, as before, so existing bge vectors stay valid)."""
+    title, text = t if isinstance(t, tuple) else (None, t)
+    if not config.EMBED_MULTIMODAL:
+        return "\n".join(x for x in (title, text) if x)
+    if kind == "query":
+        return f"task: search result | query: {text}"
+    return f"title: {(title or 'none').replace(chr(10), ' / ')} | text: {text}"
+
+
+async def _embed_raw(inputs: list, timeout=60) -> list[list[float]] | None:
     _, client = _get()
     headers = {"Authorization": f"Bearer {config.EMBED_API_KEY}"} if config.EMBED_API_KEY else {}
     try:
         r = await client.post(f"{config.EMBED_URL}/embeddings", headers=headers,
-                              json={"model": config.EMBED_MODEL, "input": [t[:20000] for t in texts]}, timeout=60)
+                              json={"model": config.EMBED_MODEL, "input": inputs}, timeout=timeout)
         r.raise_for_status()
         return [d["embedding"] for d in r.json()["data"]]
     except Exception as e:  # optional dependency
         log.warning("embedding unavailable: %r", e)
         return None
+
+
+async def embed(texts: list, kind: str = "doc") -> list[list[float]] | None:
+    """Text embeddings; kind is "doc" (indexed content) or "query". Items are strings or
+    (title, text) pairs. Returns None if the service is unavailable."""
+    return await _embed_raw([_embed_text(t, kind)[:20000] for t in texts])
+
+
+async def embed_images(images: list[bytes]) -> list[list[float]] | None:
+    """Image embeddings (EmbeddingGemma path only), PNG bytes in, same space as text."""
+    if not config.EMBED_MULTIMODAL or not images:
+        return None
+    import base64
+    return await _embed_raw([{"image": "data:image/png;base64," + base64.b64encode(b).decode()} for b in images],
+                            timeout=180)

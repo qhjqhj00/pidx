@@ -33,6 +33,9 @@ FILES_DIR = DATA_DIR / "files"
 LLM_BASE_URL = os.environ.get("PIDX_LLM_BASE_URL", os.environ.get("ATRIA_BASE_URL", "http://100.104.77.119:8100/v1"))
 LLM_API_KEY = os.environ.get("PIDX_LLM_API_KEY", os.environ.get("ATRIA_API_KEY", ""))
 LLM_MODEL = os.environ.get("PIDX_LLM_MODEL", os.environ.get("ATRIA_MODEL", "Atria-Dawn-Preview"))
+# Models known to take image input (OpenAI-style image_url parts). PIDX_VISION_MODELS adds more.
+VISION_MODELS = {"deepseek-flash", "deepseek-v4-flash",
+                 *filter(None, os.environ.get("PIDX_VISION_MODELS", "").split(","))}
 LLM_CONCURRENCY = _int("PIDX_LLM_CONCURRENCY", 24)   # Atria: <=100 per project
 
 
@@ -48,9 +51,11 @@ LLM_BACKENDS = {
                 "extra": _no_thinking(LLM_MODEL), "label": f"{LLM_MODEL}（建索引用的模型）"},
     "deepseek": {"base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
                  "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
-                 "model": os.environ.get("PIDX_DEEPSEEK_MODEL", "deepseek-v4-flash"),
-                 "extra": _no_thinking("deepseek"), "label": "DeepSeek V4 Flash"},
+                 "model": os.environ.get("PIDX_DEEPSEEK_MODEL", "deepseek-flash"),
+                 "extra": _no_thinking("deepseek"), "label": "DeepSeek V4.1 Flash"},
 }
+for _b in LLM_BACKENDS.values():
+    _b["vision"] = _b["model"] in VISION_MODELS
 LLM_BACKENDS = {k: v for k, v in LLM_BACKENDS.items() if v["api_key"] or k == "default"}
 SEARCH_BACKEND = os.environ.get("PIDX_SEARCH_BACKEND", "deepseek" if "deepseek" in LLM_BACKENDS else "default")
 if SEARCH_BACKEND not in LLM_BACKENDS:
@@ -62,6 +67,29 @@ LLM_TIMEOUT = _int("PIDX_LLM_TIMEOUT", 300)
 EMBED_URL = os.environ.get("PIDX_EMBED_URL", "https://api.siliconflow.cn/v1")
 EMBED_API_KEY = os.environ.get("PIDX_EMBED_API_KEY", os.environ.get("SILICON_FLOW_API_KEY", ""))
 EMBED_MODEL = os.environ.get("PIDX_EMBED_MODEL", "BAAI/bge-m3")
+
+# EmbeddingGemma 2 (text + image in one 768-d space). Setting PIDX_GEMMA_EMBED_URL switches the
+# embedding path to it: task prefixes on text, image blocks cropped from the page and embedded too,
+# and search returns matching images. Unset -> the bge-m3 path above, unchanged.
+GEMMA_EMBED_URL = os.environ.get("PIDX_GEMMA_EMBED_URL", "").rstrip("/")
+EMBED_MULTIMODAL = bool(GEMMA_EMBED_URL)
+if EMBED_MULTIMODAL:
+    EMBED_URL = GEMMA_EMBED_URL
+    EMBED_API_KEY = os.environ.get("PIDX_GEMMA_EMBED_API_KEY", "")
+    EMBED_MODEL = os.environ.get("PIDX_GEMMA_EMBED_MODEL", "embeddinggemma-2")
+CROPS_DIR = DATA_DIR / "crops"                                   # cropped image blocks, one PNG each
+IMAGE_MIN_PT = _int("PIDX_IMAGE_MIN_PT", 48)                     # skip icons / logos: both sides >= this (pt)
+IMAGE_MIN_AREA = float(os.environ.get("PIDX_IMAGE_MIN_AREA", 0.01))   # ... and >= this share of the page
+IMAGE_MAX_PER_DOC = _int("PIDX_IMAGE_MAX_PER_DOC", 300)
+IMAGE_MAX_PX = _int("PIDX_IMAGE_MAX_PX", 1024)                   # longest side of a crop
+IMAGE_TOP_K = _int("PIDX_IMAGE_TOP_K", 6)                        # images returned per search
+# Text->image cosines are compressed: unrelated pictures land around 0.50-0.56, a matching one at
+# 0.63-0.75 with a clear gap to the next. Keep hits above the floor and within the margin of the best.
+IMAGE_MIN_SCORE = float(os.environ.get("PIDX_IMAGE_MIN_SCORE", 0.6))
+IMAGE_REL_MARGIN = float(os.environ.get("PIDX_IMAGE_REL_MARGIN", 0.05))
+# Answering with a vision model: up to this many cropped images (matched images first, then the
+# figures inside the sections being read) go into the answer prompt. 0 = text only.
+ANSWER_IMAGES = _int("PIDX_ANSWER_IMAGES", 4)
 
 # OCR / layout for scanned PDFs: MinerU cloud API (mineru.net). Setting PIDX_MINERU_URL instead
 # points at a self-hosted MinerU server (`mineru-api`) and needs no key.

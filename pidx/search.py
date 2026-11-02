@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-from . import config, llm, store, tree
+from . import config, images as imagemod, llm, store, tree
 from .llm import approx_tokens, chat_json
 
 FULL_TREE_BUDGET = 40000      # tokens of skeleton we are happy to send in one prompt
@@ -61,8 +61,16 @@ def _unit(v):
 _vec_cache: dict[str, tuple] = {}
 
 
+def vectors_current(doc) -> bool:
+    """Vectors made by another embedding model live in another space (and size): ignore them until
+    the background backfill has recomputed them."""
+    return (doc.get("embed_model") or store.LEGACY_EMBED_MODEL) == llm.embed_model()
+
+
 def node_vectors(doc) -> tuple[list[str], np.ndarray | None]:
     """Unit-normalised node vectors of a document, cached until the document changes."""
+    if not vectors_current(doc):
+        return [], None
     key = doc.get("updated_at")
     hit = _vec_cache.get(doc["id"])
     if hit and hit[0] == key:
@@ -84,9 +92,47 @@ def node_scores(doc, qvs) -> dict[str, float]:
 
 def doc_score(doc, qv) -> float:
     s = [max(node_scores(doc, [qv]).values(), default=0.0)]
-    if doc.get("embedding"):
+    if doc.get("embedding") and vectors_current(doc) and len(doc["embedding"]) == len(qv):
         s.append(float(_unit(doc["embedding"]) @ qv))
     return max(s)
+
+
+_img_cache: dict[str, tuple] = {}
+
+
+def image_hits(docs, qvs, k=None) -> list[dict]:
+    """EmbeddingGemma path: the images (cropped figures, charts, photos) closest to the query across
+    the given documents, best first, above IMAGE_MIN_SCORE."""
+    if not config.EMBED_MULTIMODAL or not qvs:
+        return []
+    q = np.stack(qvs)
+    out = []
+    for d in docs:
+        if not vectors_current(d):
+            continue
+        hit = _img_cache.get(d["id"])
+        if not hit or hit[0] != d.get("updated_at"):
+            meta, m = store.load_image_vectors(d["id"])
+            hit = (d.get("updated_at"), meta, _unit(m) if m is not None else None)
+            _img_cache[d["id"]] = hit
+        _, meta, m = hit
+        if m is None or m.shape[1] != q.shape[1]:
+            continue
+        sims = (m @ q.T).max(axis=1)
+        by_id = index_nodes(d["tree"])
+        for im, sc in zip(meta, sims.tolist()):
+            if sc < config.IMAGE_MIN_SCORE:
+                continue
+            n = by_id.get(im["node_id"])
+            out.append({"doc_id": d["id"], "doc_name": d["name"], "rel_path": d.get("rel_path"),
+                        "image_id": im["image_id"], "page": im["page"], "score": round(sc, 4),
+                        "bbox_pt": im["bbox"], "node_id": im["node_id"], "node_title": n["title"] if n else None,
+                        "caption": im.get("caption") or "",
+                        "url": f"/v1/documents/{d['id']}/images/{im['image_id']}"})
+    out.sort(key=lambda x: -x["score"])
+    if out:
+        out = [x for x in out if x["score"] >= out[0]["score"] - config.IMAGE_REL_MARGIN]
+    return out[:k or config.IMAGE_TOP_K]
 
 
 def _doc_listing(docs) -> str:
@@ -267,9 +313,11 @@ Return JSON {{"thinking": "<short reason>", "relevance": <0-3>, "node_list": ["<
 with at most {k} node ids, most relevant first; empty node_list if relevance is 0."""
 
 
-async def hybrid_search(query, doc, qvs, k=5, exclude=(), extra="", skip_anchors=()):
+async def hybrid_search(query, doc, qvs, k=5, exclude=(), extra="", skip_anchors=(), image_nodes=()):
     """Recall anchor subtrees by node vectors, read them in parallel. Returns
-    (thinking, nodes, how, examined anchor indexes); nodes=None means no vectors for this doc."""
+    (thinking, nodes, how, examined anchor indexes); nodes=None means no vectors for this doc.
+    image_nodes: nodes holding images that matched the query; the subtree with the best of them is
+    read too, even when its text scores low (a chart can answer what the prose does not say)."""
     scores = node_scores(doc, qvs)
     if not scores:
         return None
@@ -279,6 +327,13 @@ async def hybrid_search(query, doc, qvs, k=5, exclude=(), extra="", skip_anchors
     fresh = [i for i in range(len(al)) if i not in skip_anchors] or list(range(len(al)))   # all read: re-read
     ranked = sorted(((i, anchor_score[i]) for i in fresh), key=lambda x: -x[1])
     chosen = ranked[:config.ANCHORS_PER_DOC]
+    taken = {i for i, _ in chosen}
+    for nid in image_nodes:
+        i = next((i for i in fresh if nid in al[i]["ids"]), None)
+        if i is not None and i not in taken:
+            chosen.append((i, anchor_score[i]))
+            taken.add(i)
+            break
 
     async def read(i, score):
         a = al[i]
@@ -358,6 +413,25 @@ def node_blocks(doc_id, node, pages_cache):
     return out
 
 
+def node_images(doc_id, node, pages_cache):
+    """Image / chart blocks inside a node's range that have a crop on disk, as (block, page)."""
+    sp, so = node["start"]
+    ep, eo = node["end"] if node["end"] else (node["end_index"], 10 ** 9)
+    out = []
+    for p in range(sp, ep + 1):
+        page = pages_cache.get(p)
+        if not page:
+            continue
+        for b in page["blocks"]:
+            if b.get("type") not in imagemod.IMAGE_TYPES:
+                continue
+            if (p == sp and b["start"] < so) or (p == ep and b["start"] >= eo):
+                continue
+            if imagemod.crop_path(doc_id, b["id"]).exists():
+                out.append((b, page))
+    return out
+
+
 def bbox_k(b, page):
     """bbox in thousandths of page width/height, origin top-left (PageIndex convention)."""
     if not b.get("bbox") or not page.get("width"):
@@ -396,9 +470,9 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
                     "library": [{"doc_id": d["id"], "name": d["name"]} for d in docs]})
 
     qv = None
-    if retrieval == "hybrid" or len(docs) > 1:
+    if retrieval == "hybrid" or len(docs) > 1 or config.EMBED_MULTIMODAL:   # Gemma: images need the query vector
         t = time.time()
-        v = await llm.embed([query])
+        v = await llm.embed([query], kind="query")
         qv = _unit(v[0]) if v else None
         phases.append(("向量召回", t - t0, time.time() - t0))
         await tr.event({"type": "embed", "ok": qv is not None, "ms": round((time.time() - t) * 1000)})
@@ -419,6 +493,9 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
     extra = ""
     qvs = [qv] if qv is not None else []
     examined = {}      # doc_id -> anchor indexes already read (hybrid)
+    images = image_hits(docs, qvs)
+    if config.EMBED_MULTIMODAL:
+        await tr.event({"type": "images", "images": images})
     result = {}
     for rnd in range(max_rounds if answer else 1):
         seen = {(d["id"], n["node_id"]) for d, n, _ in hits}
@@ -428,7 +505,9 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
             r = None
             if retrieval == "hybrid" and qvs:
                 r = await hybrid_search(query, d, qvs, top_k, exclude=excl, extra=extra,
-                                        skip_anchors=examined.get(d["id"], set()))
+                                        skip_anchors=examined.get(d["id"], set()),
+                                        image_nodes=[im["node_id"] for im in images
+                                                     if im["doc_id"] == d["id"] and im["node_id"]] if rnd == 0 else ())
             if r is not None:
                 th, nodes, how, ex = r
                 examined.setdefault(d["id"], set()).update(ex)
@@ -453,7 +532,7 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
         if not answer or new == 0 and rnd > 0:
             break
         t = time.time()
-        result = await _answer(query, docs, hits, pages, tr)
+        result = await _answer(query, docs, hits, pages, tr, images)
         phases.append((f"作答 · 第 {rnd + 1} 轮", t - t0, time.time() - t0))
         if result.get("sufficient", True) or not result.get("missing"):
             break
@@ -461,7 +540,7 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
         extra = ("Already read (not sufficient): " + "; ".join(n["title"] for _, n, _ in hits) +
                  f"\nStill missing: {result['missing']}\nPoint to OTHER nodes that may contain the missing information.")
         if qvs:   # recall again around what is missing
-            v = await llm.embed([f"{query}\n{result['missing']}"])
+            v = await llm.embed([f"{query}\n{result['missing']}"], kind="query")
             if v:
                 qvs = [_unit(v[0])]
 
@@ -474,6 +553,11 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
         out_nodes.append(item)
     res = {"query": query, "documents": [{"doc_id": d["id"], "name": d["name"]} for d in docs],
            "reasoning": reasoning, "nodes": out_nodes}
+    if config.EMBED_MULTIMODAL:
+        for im in images:
+            pg = pages.get(im["doc_id"], {}).get(im["page"])
+            im["bbox"] = bbox_k({"bbox": im["bbox_pt"]}, pg) if pg else None
+        res["images"] = images
     if answer:
         res.update(answer=result.get("answer", ""), citations=result.get("citations", []),
                    sufficient=result.get("sufficient", True))
@@ -502,7 +586,7 @@ STATUS_MARK = "@@STATUS@@"
 ANSWER_PROMPT = """Answer the question using only the document excerpts below.
 Each excerpt block starts with an id in square brackets like [1:p12_b3] (document 1, page 12, block 3).
 Cite the blocks that support each statement by putting their ids in square brackets right after it, e.g. "... was $3.4 billion [1:p12_b3]."
-Be precise with numbers, units and periods. Answer in the language of the question. If the excerpts do not contain enough information, answer what you can and say what is missing.
+{images_note}Be precise with numbers, units and periods. Answer in the language of the question. If the excerpts do not contain enough information, answer what you can and say what is missing.
 
 Question: {query}
 
@@ -512,7 +596,39 @@ Write the answer in markdown first. Then, on the very last line, write {mark} fo
 {mark} {{"sufficient": <true|false>, "missing": "<what information is still missing, empty if sufficient>"}}"""
 
 
-async def _answer(query, docs, hits, pages, tr):
+def _answer_images(docs, hits, pages, matched) -> list[tuple]:
+    """Images for a vision answer: (doc, block, page, why), matched-by-vector first, then the
+    figures inside the sections being read; capped at ANSWER_IMAGES."""
+    if not config.ANSWER_IMAGES or not config.LLM_BACKENDS[llm.backend.get()].get("vision"):
+        return []
+    by_id = {d["id"]: d for d in docs}
+    out, seen = [], set()
+
+    def add(d, b, page, why):
+        if (d["id"], b["id"]) not in seen and len(out) < config.ANSWER_IMAGES:
+            seen.add((d["id"], b["id"]))
+            out.append((d, b, page, why))
+
+    for im in matched or []:
+        d = by_id.get(im["doc_id"])
+        page = pages.get(im["doc_id"], {}).get(im["page"])
+        if d and page:
+            b = next((x for x in page["blocks"] if x["id"] == im["image_id"]), None) or \
+                {"id": im["image_id"], "type": "image", "bbox": im["bbox_pt"]}
+            add(d, b, page, f"matched the question (score {im['score']})")
+    for d, n, _ in hits:
+        for b, page in node_images(d["id"], n, pages[d["id"]]):
+            add(d, b, page, f"figure in section \"{n['title']}\"")
+    return out
+
+
+def _image_part(doc_id, image_id) -> dict:
+    import base64
+    data = imagemod.crop_path(doc_id, image_id).read_bytes()
+    return {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(data).decode()}}
+
+
+async def _answer(query, docs, hits, pages, tr, matched_images=None):
     didx = {d["id"]: i + 1 for i, d in enumerate(docs)}
     parts, used, block_map, n_blocks = [], 0, {}, 0
     for d, n, _ in hits:
@@ -531,8 +647,19 @@ async def _answer(query, docs, hits, pages, tr):
         used += tok
         parts.append(f"=== Document {didx[d['id']]}: {d.get('rel_path') or d['name']} — section \"{n['title']}\" "
                      f"(pages {n['start_index']}-{n['end_index']})\n" + "\n".join(body))
+    pics = _answer_images(docs, hits, pages, matched_images)
+    image_parts = []
+    for d, b, page, why in pics:
+        tag = f"{didx[d['id']]}:{b['id']}"
+        caption = page["text"][b.get("start", 0):b.get("end", 0)].strip()
+        block_map[tag] = (d, b, page, "[image] " + caption)
+        image_parts.append({"type": "text", "text": f"[{tag}] image on page {page['page']} of document "
+                                                    f"{didx[d['id']]} ({d.get('rel_path') or d['name']}), {why}"
+                                                    + (f"; caption: {caption[:200]}" if caption else "")})
+        image_parts.append(_image_part(d["id"], b["id"]))
     await tr.event({"type": "read", "nodes": [_node_brief(d, n) for d, n, _ in hits], "blocks": n_blocks,
-                    "context_tokens": used, "sample": [f"[{k}] {v[3][:90]}" for k, v in list(block_map.items())[:3]]})
+                    "context_tokens": used, "images": [f"{didx[d['id']]}:{b['id']}" for d, b, _, _ in pics],
+                    "sample": [f"[{k}] {v[3][:90]}" for k, v in list(block_map.items())[:3]]})
 
     buf, sent = "", 0
 
@@ -548,9 +675,12 @@ async def _answer(query, docs, hits, pages, tr):
     await tr.event({"type": "answer_start"})
     context = "\n\n".join(parts) or ("(No section of the searched documents looked relevant to the question. "
                                        "Say that the documents do not contain this information.)")
-    out = await llm.chat([{"role": "user", "content": ANSWER_PROMPT.format(query=query, context=context,
-                                                                          mark=STATUS_MARK)}],
-                         max_tokens=4000, label="作答", on_delta=on_delta)
+    note = ("Images from the documents follow the text, each preceded by its id; read them like the text "
+            "(values in charts, labels, photos) and cite them the same way.\n") if image_parts else ""
+    prompt = ANSWER_PROMPT.format(query=query, context=context, mark=STATUS_MARK, images_note=note)
+    content = [{"type": "text", "text": prompt}, *image_parts] if image_parts else prompt
+    out = await llm.chat([{"role": "user", "content": content}],
+                         max_tokens=4000, label="作答" + (f" · {len(pics)} 张图" if pics else ""), on_delta=on_delta)
     ans, _, tail = out.partition(STATUS_MARK)
     ans = ans.strip()
     try:
@@ -558,12 +688,15 @@ async def _answer(query, docs, hits, pages, tr):
     except (ValueError, json.JSONDecodeError):
         status = {}
     cites = []
-    for tag in dict.fromkeys(re.findall(r"\[?(\d+:p\d+_b\d+)\]?", ans)):
+    for tag in dict.fromkeys(re.findall(r"\[?(\d+:p\d+_(?:b\d+|full))\]?", ans)):
         if tag in block_map:
             d, b, page, text = block_map[tag]
-            cites.append({"tag": tag, "doc_id": d["id"], "doc_name": d["name"], "block_id": b["id"],
-                          "page": page["page"], "page_label": page.get("label"), "bbox": bbox_k(b, page),
-                          "text": text[:500]})
+            cite = {"tag": tag, "doc_id": d["id"], "doc_name": d["name"], "block_id": b["id"],
+                    "page": page["page"], "page_label": page.get("label"), "bbox": bbox_k(b, page),
+                    "text": text[:500]}
+            if text.startswith("[image]"):
+                cite["image_url"] = f"/v1/documents/{d['id']}/images/{b['id']}"
+            cites.append(cite)
     res = {"answer": ans, "citations": cites, "sufficient": bool(status.get("sufficient", True)),
            "missing": status.get("missing", "")}
     await tr.event({"type": "answer_done", **res})

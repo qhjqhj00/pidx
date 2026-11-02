@@ -13,6 +13,7 @@
   GET    /v1/collections[/{id}]            list / folder tree with per-file status
   DELETE /v1/collections/{id}              the collection and all its documents
   GET    /v1/documents/{id}/pages/{n}/image?highlight=p3_b1,p3_b4
+  GET    /v1/documents/{id}/images/{image_id}   a cropped image block (EmbeddingGemma path; search returns these)
   POST   /v1/search                        {query, doc_ids?, top_k?, answer?, max_rounds?, include_text?}
   POST   /v1/search/stream                 same body, Server-Sent Events (progress + answer deltas + result)
 """
@@ -33,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import collection, config, indexer, parse, search as searchmod, store, tree
+from . import collection, config, images, indexer, llm, parse, search as searchmod, store, tree
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -202,6 +203,7 @@ def _delete_files(d):
     for p in {d["path"], d.get("pdf_path")}:
         if p:
             Path(p).unlink(missing_ok=True)
+    images.remove_crops(d["id"])
 
 
 @app.get("/v1/documents")
@@ -306,6 +308,17 @@ def page_image(doc_id: str, page: int, highlight: str = "", zoom: float = 1.5):
     return Response(png, media_type="image/png", headers={"Cache-Control": "max-age=300"})
 
 
+@app.get("/v1/documents/{doc_id}/images/{image_id}")
+def image_crop(doc_id: str, image_id: str):
+    _doc_or_404(doc_id)
+    if not images.IMAGE_ID.match(image_id):
+        raise HTTPException(400, "bad image id")
+    p = images.crop_path(doc_id, image_id)
+    if not p.exists():
+        raise HTTPException(404, f"no image {image_id} in {doc_id}")
+    return FileResponse(p, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
 class SearchReq(BaseModel):
     query: str
     doc_ids: list[str] | None = None
@@ -328,7 +341,9 @@ def _check_llm(name, retrieval=None):
 @app.get("/v1/llm")
 def llm_backends():
     return {"default": config.SEARCH_BACKEND,
-            "backends": [{"name": k, "label": v["label"], "model": v["model"]} for k, v in config.LLM_BACKENDS.items()]}
+            "backends": [{"name": k, "label": v["label"], "model": v["model"]} for k, v in config.LLM_BACKENDS.items()],
+            "embedding": {"model": config.EMBED_MODEL, "url": config.EMBED_URL, "multimodal": config.EMBED_MULTIMODAL,
+                          "space": llm.embed_model()}}
 
 
 @app.post("/v1/search")
