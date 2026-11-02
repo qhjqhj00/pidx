@@ -472,7 +472,7 @@ function waterfall(tm) {
 }
 
 async function showPage(docId, page, blocks, text) {
-  const d = docsCache.find(x => x.id === docId);
+  const d = docsCache.find(x => x.id === docId) || await api(`v1/documents/${docId}`).catch(() => null);
   const name = d?.relPath || d?.name || docId;
   const quote = text ? `<div class="quote">${esc(text.slice(0, 400))}</div>` : "";
   if (!d || d.pageImages) {

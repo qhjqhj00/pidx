@@ -48,6 +48,7 @@ async def lifespan(app):
 
 app = FastAPI(title="pidx — tree-index RAG", lifespan=lifespan)
 WEB = Path(__file__).parent / "web"
+NO_CACHE = {"Cache-Control": "no-cache"}   # pages change with releases; always revalidate (ETag)
 
 DENIED = """<!doctype html><meta charset="utf-8"><title>pidx</title>
 <body style="font:15px system-ui;padding:48px;color:#444">需要访问 token：请使用带 <code>?token=…</code> 的完整链接打开。</body>"""
@@ -340,6 +341,14 @@ async def search(req: SearchReq):
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
+@app.middleware("http")
+async def static_no_cache(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.post("/v1/search/stream")
 async def search_stream(req: SearchReq):
     """Same as /v1/search, as Server-Sent Events: progress events, answer deltas, then {"type": "done", "result"}."""
@@ -377,14 +386,14 @@ async def search_stream(req: SearchReq):
 
 @app.get("/")
 def index_page():
-    return FileResponse(WEB / "index.html")
+    return FileResponse(WEB / "index.html", headers=NO_CACHE)
 
 
 @app.get("/pipeline")
 def pipeline_page():
-    return FileResponse(WEB / "pipeline.html")
+    return FileResponse(WEB / "pipeline.html", headers=NO_CACHE)
 
 
 @app.get("/api-docs")
 def api_docs_page():
-    return FileResponse(WEB / "api.html")
+    return FileResponse(WEB / "api.html", headers=NO_CACHE)
