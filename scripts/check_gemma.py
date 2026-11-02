@@ -139,6 +139,11 @@ async def main():
         hits = search.image_hits([d], [await qvec(q)])
         check(f"no image for a text-only question: {q}", hits == [], str([(h['image_id'], h['score']) for h in hits]))
 
+    qv = await qvec("红色的停车警示标志")
+    nodes_only = max(search.node_scores(d, [qv]).values())
+    check("doc_score uses the image vector", search.doc_score(d, qv) >= search.doc_image_score(d, qv) > nodes_only,
+          f"doc_score={search.doc_score(d, qv):.3f} image={search.doc_image_score(d, qv):.3f} nodes={nodes_only:.3f}")
+
     text_cases = [("电芯最大温差控制在多少度？", "消防与热管理"), ("动火作业要办什么手续？", "安全管理"),
                   ("哪类客户占比最大？", "客户结构")]
     for q, want in text_cases:

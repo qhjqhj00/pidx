@@ -91,13 +91,37 @@ def node_scores(doc, qvs) -> dict[str, float]:
 
 
 def doc_score(doc, qv) -> float:
+    """Best of: document description, best node, and (Gemma path) best image when it clears
+    IMAGE_MIN_SCORE, so a photo with no text to describe it can still reach the shortlist."""
     s = [max(node_scores(doc, [qv]).values(), default=0.0)]
     if doc.get("embedding") and vectors_current(doc) and len(doc["embedding"]) == len(qv):
         s.append(float(_unit(doc["embedding"]) @ qv))
+    im = doc_image_score(doc, qv)
+    if im >= config.IMAGE_MIN_SCORE:
+        s.append(im)
     return max(s)
 
 
 _img_cache: dict[str, tuple] = {}
+
+
+def _image_matrix(doc):
+    """(meta, unit-normalised image vectors) of a document, cached until it changes; (.., None) if none."""
+    if not config.EMBED_MULTIMODAL or not vectors_current(doc):
+        return [], None
+    hit = _img_cache.get(doc["id"])
+    if not hit or hit[0] != doc.get("updated_at"):
+        meta, m = store.load_image_vectors(doc["id"])
+        hit = (doc.get("updated_at"), meta, _unit(m) if m is not None else None)
+        _img_cache[doc["id"]] = hit
+    return hit[1], hit[2]
+
+
+def doc_image_score(doc, qv) -> float:
+    _, m = _image_matrix(doc)
+    if m is None or qv is None or m.shape[1] != len(qv):
+        return 0.0
+    return float((m @ qv).max())
 
 
 def image_hits(docs, qvs, k=None) -> list[dict]:
@@ -108,14 +132,7 @@ def image_hits(docs, qvs, k=None) -> list[dict]:
     q = np.stack(qvs)
     out = []
     for d in docs:
-        if not vectors_current(d):
-            continue
-        hit = _img_cache.get(d["id"])
-        if not hit or hit[0] != d.get("updated_at"):
-            meta, m = store.load_image_vectors(d["id"])
-            hit = (d.get("updated_at"), meta, _unit(m) if m is not None else None)
-            _img_cache[d["id"]] = hit
-        _, meta, m = hit
+        meta, m = _image_matrix(d)
         if m is None or m.shape[1] != q.shape[1]:
             continue
         sims = (m @ q.T).max(axis=1)
@@ -135,19 +152,29 @@ def image_hits(docs, qvs, k=None) -> list[dict]:
     return out[:k or config.IMAGE_TOP_K]
 
 
-def _doc_listing(docs) -> str:
-    """Shortlisted documents, standalone ones as a list and zip-collection ones under their folders."""
+def _image_note(d, img_scores) -> str:
+    sc = (img_scores or {}).get(d["id"], 0.0)
+    return f" [contains an image that visually matches the question, similarity {sc:.2f}]" \
+        if sc >= config.IMAGE_MIN_SCORE else ""
+
+
+def _doc_listing(docs, img_scores=None) -> str:
+    """Shortlisted documents, standalone ones as a list and zip-collection ones under their folders.
+    img_scores (Gemma path): documents whose images match the question get a note, because their
+    text description may say nothing about what the picture shows."""
     lines, colls = [], {}
     for i, d in enumerate(docs):
         if d.get("collection_id"):
             colls.setdefault(d["collection_id"], []).append(i)
         else:
-            lines.append(f"[{i}] {d['name']} ({d['page_count']} pages): {d.get('description') or ''}")
+            lines.append(f"[{i}] {d['name']} ({d['page_count']} pages): {d.get('description') or ''}"
+                         + _image_note(d, img_scores))
     for cid, idx in colls.items():
         c = store.get_collection(cid)
         if not c:
             for i in idx:
-                lines.append(f"[{i}] {docs[i]['name']}: {docs[i].get('description') or ''}")
+                lines.append(f"[{i}] {docs[i]['name']}: {docs[i].get('description') or ''}"
+                             + _image_note(docs[i], img_scores))
             continue
         want = {docs[i]["id"]: i for i in idx}
         lines.append(f"Collection \"{c['name']}\" (folder tree; only matching files shown):")
@@ -159,7 +186,7 @@ def _doc_listing(docs) -> str:
                     if ch["doc_id"] in want:
                         d = docs[want[ch["doc_id"]]]
                         out.append("  " * depth + f"[{want[ch['doc_id']]}] {ch['title']} ({d['page_count']} pages): "
-                                   f"{d.get('description') or ''}")
+                                   f"{d.get('description') or ''}" + _image_note(d, img_scores))
                 else:
                     sub = show(ch, depth + 1)
                     if sub:
@@ -180,15 +207,25 @@ async def select_docs(query, docs, qv=None, max_docs=5):
         return docs, "", ranked
     short = ranked[:config.DOC_SHORTLIST]
     cand = [d for d, _ in short]
+    img_scores = {d["id"]: doc_image_score(d, qv) for d in cand} if config.EMBED_MULTIMODAL and qv is not None else {}
     js = await chat_json(f"""Question: {query}
 
 Documents in the library:
-{_doc_listing(cand)}
+{_doc_listing(cand, img_scores)}
 
 Which documents should be searched to answer the question? Pick all that are needed (e.g. several for comparisons), at most {max_docs}, most relevant first.
 Return JSON {{"thinking": "...", "docs": [<index>, ...]}}""", max_tokens=1000, label="选文档")
     picked = [cand[i] for i in js.get("docs", []) if isinstance(i, int) and 0 <= i < len(cand)]
-    return list({d["id"]: d for d in picked}.values()) or cand[:max_docs], js.get("thinking", ""), short
+    picked = list({d["id"]: d for d in picked}.values()) or cand[:max_docs]
+    # the documents holding the images that search would return are searched too, even when the LLM
+    # passed them over (a photo's text description can be empty or wrong); at most 2 added
+    if img_scores:
+        best = max(img_scores.values())
+        have = {d["id"] for d in picked}
+        extra = [d for d in cand if d["id"] not in have and img_scores[d["id"]] >= config.IMAGE_MIN_SCORE
+                 and img_scores[d["id"]] >= best - config.IMAGE_REL_MARGIN]
+        picked += sorted(extra, key=lambda d: -img_scores[d["id"]])[:2]
+    return picked, js.get("thinking", ""), short
 
 
 # --------------------------------------------------------------------------- tree search
