@@ -20,6 +20,7 @@
   <a class="sub" href="#get">详情 / 状态</a>
   <a class="sub" href="#reindex">重建索引</a>
   <a class="sub" href="#delete">删除</a>
+  <a href="#collections">资料包（zip）</a>
   <a href="#content">内容</a>
   <a class="sub" href="#tree">树</a>
   <a class="sub" href="#pages">页文本</a>
@@ -64,19 +65,25 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <h2 id="docs">文档</h2>
 
 <div class="ep" id="submit"><span class="m post">POST</span><h3>/v1/documents</h3></div>
-<p>上传一个 PDF，立刻返回 <code>doc_id</code>，索引在后台建立。请求格式是 <code>multipart/form-data</code>。</p>
+<p>上传一个文件，立刻返回 <code>doc_id</code>，索引在后台建立。请求格式是 <code>multipart/form-data</code>。支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx）；zip 请用 <a href="#collections"><code>POST /v1/collections</code></a>。</p>
 <table>
   <tr><th>字段</th><th>类型</th><th>默认</th><th>说明</th></tr>
-  <tr><td><code>file</code></td><td>file</td><td>必填</td><td>PDF 文件（只支持 PDF）。</td></tr>
-  <tr><td><code>mode</code></td><td>string</td><td><code>auto</code></td><td><code>auto</code>：每页少于 80 字符时自动走 OCR；<code>text</code>：只用文本层；<code>ocr</code>：强制走 MinerU。</td></tr>
+  <tr><td><code>file</code></td><td>file</td><td>必填</td><td>按扩展名判断格式，并检查文件头。图片和 Office 文件需要配置 MinerU。</td></tr>
+  <tr><td><code>mode</code></td><td>string</td><td><code>auto</code></td><td>只对 PDF 有效。<code>auto</code>：每页少于 80 字符时自动走 OCR；<code>text</code>：只用文本层；<code>ocr</code>：强制走 MinerU。图片总是走 OCR。</td></tr>
   <tr><td><code>summary</code></td><td>bool</td><td><code>true</code></td><td>是否生成节点摘要。关掉能省掉大部分 LLM 调用，但树检索的准确度会下降。</td></tr>
   <tr><td><code>metadata</code></td><td>JSON string</td><td><code>{}</code></td><td>自定义元数据，原样保存并返回。</td></tr>
 </table>
-<pre><code>{"doc_id": "pi-48b6064602a4", "name": "2023-annual-report.pdf", "status": "queued"}</code></pre>
+<pre><code>{"doc_id": "pi-48b6064602a4", "name": "2023-annual-report.pdf", "format": "pdf", "status": "queued"}</code></pre>
 <p class="muted">如果重名，会自动改名为 <code>name_1.pdf</code>、<code>name_2.pdf</code>……</p>
+<table>
+  <tr><th>format</th><th>解析</th><th>页</th><th>引用</th></tr>
+  <tr><td><code>pdf</code></td><td>PyMuPDF；扫描件走 MinerU</td><td>物理页</td><td>bbox，可在页图上高亮</td></tr>
+  <tr><td><code>image</code></td><td>包成单页 PDF 后走 MinerU OCR</td><td>1 页</td><td>bbox，可在原图上高亮</td></tr>
+  <tr><td><code>office</code></td><td>MinerU 原生解析</td><td>虚拟页：PPT 每张幻灯片、Excel 每个工作表各一页，长内容按约 1500 token 再切；页带 <code>label</code></td><td><code>bbox: null</code>，只有文本；没有页图</td></tr>
+</table>
 
 <div class="ep" id="list"><span class="m get">GET</span><h3>/v1/documents</h3></div>
-<p>参数：<code>limit</code>（1–10000，默认 50）、<code>offset</code>。按创建时间倒序。</p>
+<p>参数：<code>limit</code>（1–10000，默认 50）、<code>offset</code>、<code>collection_id</code>（只列某个资料包里的文件）。按创建时间倒序。</p>
 <pre><code>{"documents": [ {…同下方详情…} ], "total": 4, "limit": 50, "offset": 0}</code></pre>
 
 <div class="ep" id="get"><span class="m get">GET</span><h3>/v1/documents/{doc_id}</h3></div>
@@ -90,13 +97,18 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
   "description": "This document is a quarterly earnings press release issued by The Walt Disney Company …",
   "metadata": {},
   "createdAt": 1793170384.02,
+  "format": "pdf",                     // pdf | image | office
+  "pageImages": true,                  // 有没有页图（office 为 false）
+  "collectionId": null,                // 来自 zip 时是资料包 id
+  "relPath": null,                     // 来自 zip 时是包内路径，如 "02_财务/2025年度预算.xlsx"
   "info": {
-    "parser": "pymupdf",               // pymupdf | mineru
+    "parser": "pymupdf",               // pymupdf | mineru | mineru-office
     "method": "layout+llm",            // bookmarks | layout+llm | llm-pages | page-groups
     "candidates": 26,                  // 版面标题候选数
     "nodes": 26,
     "body_size": 12.0,                 // 正文字号
-    "seconds": {"parse": 0.5, "tree": 30.9, "summary": 77.9},
+    "node_vectors": 26,                // 节点向量数（0 表示向量服务不可用）
+    "seconds": {"parse": 0.5, "tree": 30.9, "summary": 77.9, "embed": 0.4},
     "llm": {"calls": 26, "prompt_tokens": 14517, "completion_tokens": 3362}
   }
 }</code></pre>
@@ -108,6 +120,26 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <div class="ep" id="delete"><span class="m del">DELETE</span><h3>/v1/documents/{doc_id}</h3></div>
 <p>删除文档，同时删除它的页、块、树和原文件。</p>
 <pre><code>{"message": "Document deleted successfully."}</code></pre>
+
+<h2 id="collections">资料包（zip）</h2>
+<div class="ep"><span class="m post">POST</span><h3>/v1/collections</h3></div>
+<p>上传一个 zip（multipart：<code>file</code>，可选 <code>summary</code>）。目录结构成为资料包的目录树，每个支持格式的文件成为一个文档，分别在后台建索引；全部完成后再给每个目录写摘要。只有一个顶层目录时把它当作根。GBK 文件名会自动识别；<code>__MACOSX</code>、隐藏文件直接忽略，不支持或损坏的文件列在 <code>skipped</code> 里。</p>
+<pre><code>{"collection_id": "pc-cf88552ba20d", "doc_ids": ["pi-…", …], "files": 10,
+ "skipped": [{"path": "README.txt", "reason": "unsupported format"}], "status": "processing"}</code></pre>
+<p class="muted">上限（可用环境变量调整）：1000 个文件，单文件 200 MB，解压后合计 2 GB。</p>
+
+<div class="ep"><span class="m get">GET</span><h3>/v1/collections</h3></div>
+<p>资料包列表：<code>id</code>、<code>name</code>、<code>status</code>（<code>processing → completed / failed</code>）、<code>info</code>（文件数、目录数、skipped）、<code>counts</code>（各状态的文件数）。</p>
+
+<div class="ep"><span class="m get">GET</span><h3>/v1/collections/{collection_id}</h3></div>
+<p>同上，外加目录树 <code>tree</code>：</p>
+<pre><code>{"type": "dir", "title": "星河储能项目资料", "path": "", "node_id": "d0000", "summary": "…", "nodes": [
+  {"type": "dir", "title": "02_财务", "path": "02_财务", "node_id": "d0002", "summary": "…", "nodes": [
+    {"type": "file", "title": "2025年度预算.xlsx", "path": "02_财务/2025年度预算.xlsx", "doc_id": "pi-…",
+     "status": "completed", "pageNum": 3, "format": "office", "description": "…"}]}]}</code></pre>
+
+<div class="ep"><span class="m del">DELETE</span><h3>/v1/collections/{collection_id}</h3></div>
+<p>删除资料包和它的所有文档。</p>
 
 <h2 id="content">内容</h2>
 
@@ -154,7 +186,7 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <p>页面渲染成 PNG。参数：<code>highlight</code>（逗号分隔的 block_id，在图上高亮）、<code>zoom</code>（默认 1.5）。可以直接放进 <code>&lt;img&gt;</code> 展示引用。</p>
 <pre><code>&lt;img src="$BASE/v1/documents/pi-48b6064602a4/pages/42/image?highlight=p42_b2,p42_b3"&gt;</code></pre>
 <div class="ep"><span class="m get">GET</span><h3>/v1/documents/{doc_id}/file</h3></div>
-<p>下载原 PDF。拼上 <code>#page=N</code> 可以在浏览器里直接跳到第 N 页。</p>
+<p>原文件（PDF、图片或 Office 文件）。PDF 拼上 <code>#page=N</code> 可以在浏览器里直接跳到第 N 页。</p>
 
 <h2 id="search">检索</h2>
 <div class="ep"><span class="m post">POST</span><h3>/v1/search</h3></div>
@@ -162,7 +194,9 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <table>
   <tr><th>字段</th><th>类型</th><th>默认</th><th>说明</th></tr>
   <tr><td><code>query</code></td><td>string</td><td>必填</td><td>问题，中英文都可以。</td></tr>
-  <tr><td><code>doc_ids</code></td><td>string[]</td><td><code>null</code></td><td>只在这些文档里搜。不传就搜全库，由 LLM 根据文档描述挑出最多 5 篇。</td></tr>
+  <tr><td><code>doc_ids</code></td><td>string[]</td><td><code>null</code></td><td>只在这些文档里搜。不传就搜全库（或 <code>collection_id</code> 指定的资料包）：按向量给文档排序取前 30，再由 LLM 读文档描述（资料包的文件按目录树给出）挑出最多 5 篇。</td></tr>
+  <tr><td><code>collection_id</code></td><td>string</td><td><code>null</code></td><td>只在这个 zip 资料包里搜。</td></tr>
+  <tr><td><code>retrieval</code></td><td>string</td><td><code>hybrid</code></td><td><code>hybrid</code>：节点向量召回最相关的几棵子树，LLM 并行阅读；<code>tree</code>：LLM 读整棵树（大树分层展开）。没有向量时自动用 <code>tree</code>，实际用的方式见响应里的 <code>retrieval</code>。</td></tr>
   <tr><td><code>top_k</code></td><td>int</td><td>5</td><td>每篇文档、每轮最多选几个节点。</td></tr>
   <tr><td><code>answer</code></td><td>bool</td><td><code>false</code></td><td><code>false</code> 时只返回命中的节点（适合把结果交给你自己的 LLM）；<code>true</code> 时额外生成答案和引用。</td></tr>
   <tr><td><code>max_rounds</code></td><td>int</td><td>2</td><td>只在 <code>answer=true</code> 时生效：证据不足时最多再检索几轮。</td></tr>
@@ -196,15 +230,16 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
   "usage": {"calls": 2, "prompt_tokens": 15362, "completion_tokens": 242},
   "seconds": 21.2
 }</code></pre>
-<p>响应里还有 <code>llm</code>（实际用的模型）和 <code>timing</code>：<code>phases</code> 是各阶段的墙钟时间；<code>calls</code> 是每次 LLM 调用的打点，包括 <code>ttft_ms</code>（首 token 前，含上游排队和预填充）、<code>decode_ms</code>、<code>tok_per_s</code>，以及输入、输出 token 数。</p>
+<p>引用里还有 <code>page_label</code>（Office 的虚拟页标签，如「工作表 2 · 电站清单」），Office 文件的 <code>bbox</code> 为 <code>null</code>；节点里有 <code>rel_path</code>（资料包内路径）。响应里还有 <code>retrieval</code>（实际用的召回方式）、<code>llm</code>（实际用的模型）和 <code>timing</code>：<code>phases</code> 是各阶段的墙钟时间；<code>calls</code> 是每次 LLM 调用的打点，包括 <code>ttft_ms</code>（首 token 前，含上游排队和预填充）、<code>decode_ms</code>、<code>tok_per_s</code>，以及输入、输出 token 数。</p>
 
 <div class="ep" id="stream"><span class="m post">POST</span><h3>/v1/search/stream</h3></div>
 <p>请求体和 <code>/v1/search</code> 相同，返回 Server-Sent Events，每条是 <code>data: {json}</code>。演示页的过程时间线就是用这个接口做的。</p>
 <table>
   <tr><th>type</th><th>何时 / 内容</th></tr>
-  <tr><td><code>start</code></td><td>开始：<code>library</code>（可检索的文档）、<code>llm</code></td></tr>
-  <tr><td><code>docs</code></td><td>选完文档：<code>selected</code>、<code>thinking</code>；单文档时 <code>skipped=true</code></td></tr>
-  <tr><td><code>tree_search_start</code> / <code>tree_search</code></td><td>每轮、每篇文档的树检索：<code>thinking</code>、<code>nodes</code>、<code>how</code>（整棵树一次读完，还是分层展开）</td></tr>
+  <tr><td><code>start</code></td><td>开始：<code>library</code>（可检索的文档）、<code>llm</code>、<code>retrieval</code></td></tr>
+  <tr><td><code>embed</code></td><td>问题向量算完：<code>ok</code>、<code>ms</code></td></tr>
+  <tr><td><code>docs</code></td><td>选完文档：<code>selected</code>、<code>thinking</code>、<code>shortlist</code>（向量排序前 10 及分数）；单文档时 <code>skipped=true</code></td></tr>
+  <tr><td><code>tree_search_start</code> / <code>tree_search</code></td><td>每轮、每篇文档的树检索：<code>thinking</code>、<code>nodes</code>、<code>how</code>。<code>how.mode</code> 是 <code>hybrid</code>（<code>anchors_total</code>，以及召回的每棵子树的 <code>label</code>、向量分数、LLM 相关度、选中的节点）、<code>full</code>（整棵树一次读完）或 <code>layered</code>（分层展开）</td></tr>
   <tr><td><code>llm</code></td><td>每次 LLM 调用结束时的打点（字段同 <code>timing.calls</code>）</td></tr>
   <tr><td><code>read</code></td><td>送入作答的节点数、版面块数、token 数</td></tr>
   <tr><td><code>answer_start</code> / <code>answer_delta</code> / <code>answer_done</code></td><td>答案逐段输出（<code>text</code>）；结束时给出 <code>answer</code>、<code>citations</code>、<code>sufficient</code></td></tr>
@@ -225,22 +260,23 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <h2 id="errors">错误</h2>
 <table>
   <tr><th>HTTP</th><th>情况</th></tr>
-  <tr><td>400</td><td>上传的不是 PDF 或无法打开；block_id 格式不对</td></tr>
-  <tr><td>404</td><td>doc_id、block 不存在，或页码超出范围</td></tr>
+  <tr><td>400</td><td>不支持的格式、文件头和扩展名不符或无法打开；zip 里没有可用文件或超过上限；block_id 格式不对</td></tr>
+  <tr><td>404</td><td>doc_id、collection_id、block 不存在，页码超出范围，或 Office 文档请求页图</td></tr>
   <tr><td>422</td><td>参数校验失败（FastAPI 默认格式，<code>detail</code> 里有具体字段）</td></tr>
   <tr><td>500</td><td>LLM 连续重试后仍失败等内部错误。建索引失败不会返回 500，而是把文档状态置为 <code>failed</code> 并写入 <code>error</code></td></tr>
 </table>
 <p class="muted">调用 LLM 时遇到 429/502/503/504 会自动退避重试（优先遵守 Retry-After），最多 6 次。</p>
 
 <h2 id="mcp">MCP / CLI</h2>
-<p><b>MCP</b>（stdio）：内部调用上面的 HTTP 接口，提供 <code>list_documents</code>、<code>get_tree</code>、<code>get_pages</code>、<code>search</code> 四个工具。</p>
+<p><b>MCP</b>（stdio）：内部调用上面的 HTTP 接口，提供 <code>list_documents</code>、<code>list_collections</code>、<code>get_collection</code>、<code>get_tree</code>、<code>get_pages</code>、<code>search</code> 六个工具。</p>
 <pre><code>claude mcp add pidx -e PIDX_API=http://127.0.0.1:8890 -- \
   /path/to/pidx/.venv/bin/python -m pidx.mcp_server</code></pre>
 <p><b>CLI</b>：</p>
 <pre><code>python -m pidx serve [--port 8890]               # 或 scripts/serve.sh start|stop|restart
-python -m pidx index report.pdf [--mode ocr]     # 上传并等待索引完成
+python -m pidx index report.pdf [--mode ocr]     # 上传并等待索引完成；也可以是图片、Office 文件
+python -m pidx index 资料.zip                     # zip → 资料包
 python -m pidx tree pi-48b6064602a4
-python -m pidx ask "问题" [--doc pi-xxx ...] [--no-answer]</code></pre>
+python -m pidx ask "问题" [--doc pi-xxx ...] [--collection pc-xxx] [--retrieval hybrid|tree] [--no-answer]</code></pre>
 <p class="muted">自动生成的 OpenAPI 文档在 <a href="docs">/docs</a>（Swagger UI）。</p>
 
 <h2 id="config">配置（环境变量 / .env）</h2>
@@ -251,8 +287,13 @@ python -m pidx ask "问题" [--doc pi-xxx ...] [--no-answer]</code></pre>
   <tr><td><code>PIDX_SEARCH_BACKEND</code></td><td>配置了 DeepSeek key 时为 <code>deepseek</code>，否则为 <code>default</code></td><td>检索默认用哪个模型。</td></tr>
   <tr><td><code>PIDX_PUBLIC_TOKEN</code></td><td>—</td><td>经公网反代进来的请求（带 X-Forwarded-For）必须带这个 token。</td></tr>
   <tr><td><code>PIDX_LLM_CONCURRENCY</code></td><td>24</td><td>进程内 LLM 并发上限（Atria 每个项目上限 100）。</td></tr>
-  <tr><td><code>SILICON_FLOW_API_KEY</code> / <code>PIDX_EMBED_MODEL</code></td><td>— / <code>BAAI/bge-m3</code></td><td>向量（SiliconFlow）：建索引时给文档描述算向量，文档超过 20 篇时用来粗筛。</td></tr>
-  <tr><td><code>MINERU_API_KEY</code> / <code>PIDX_MINERU_MODEL</code></td><td>— / <code>pipeline</code></td><td>扫描件 OCR（mineru.net 云端 API，单文件最多 200 页，超出的会自动切段）。<code>PIDX_MINERU_MODEL</code> 可选 <code>pipeline</code> 或 <code>vlm</code>。</td></tr>
+  <tr><td><code>SILICON_FLOW_API_KEY</code> / <code>PIDX_EMBED_MODEL</code></td><td>— / <code>BAAI/bge-m3</code></td><td>向量（SiliconFlow）：建索引时给每个节点和文档描述算向量；检索时给文档排序、召回子树。没有 key 时检索退回纯 LLM 读树。</td></tr>
+  <tr><td><code>PIDX_RETRIEVAL</code></td><td><code>hybrid</code></td><td>默认召回方式：<code>hybrid</code> 或 <code>tree</code>（请求里的 <code>retrieval</code> 优先）。</td></tr>
+  <tr><td><code>PIDX_ANCHOR_TOKENS</code> / <code>PIDX_ANCHORS_PER_DOC</code></td><td>3000 / 3</td><td>hybrid：每棵子树骨架的大小上限；每篇文档并行读几棵子树。</td></tr>
+  <tr><td><code>PIDX_DOC_SHORTLIST</code></td><td>30</td><td>选文档时交给 LLM 的候选文档数（按向量排序）。</td></tr>
+  <tr><td><code>PIDX_VIRTUAL_PAGE_TOKENS</code></td><td>1500</td><td>Office 文件的虚拟页大小。</td></tr>
+  <tr><td><code>PIDX_ZIP_MAX_FILES</code> / <code>_FILE_MB</code> / <code>_TOTAL_MB</code></td><td>1000 / 200 / 2048</td><td>zip 资料包的上限。</td></tr>
+  <tr><td><code>MINERU_API_KEY</code> / <code>PIDX_MINERU_MODEL</code></td><td>— / <code>pipeline</code></td><td>扫描件、图片 OCR 和 Office 文件解析（mineru.net 云端 API，PDF 单文件最多 200 页，超出的会自动切段）。<code>PIDX_MINERU_MODEL</code> 可选 <code>pipeline</code> 或 <code>vlm</code>。</td></tr>
   <tr><td><code>PIDX_MINERU_URL</code></td><td>—</td><td>设置后改用自建的 MinerU 服务（例如 spark-0:8880），不再调用云端。</td></tr>
   <tr><td><code>PIDX_MAX_PAGES_PER_NODE</code> / <code>_TOKENS_</code></td><td>10 / 20000</td><td>超过阈值的叶子节点会被继续拆分。</td></tr>
   <tr><td><code>PIDX_MAX_SPLIT_DEPTH</code></td><td>3</td><td>递归拆分的最大深度。</td></tr>

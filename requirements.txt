@@ -5,3 +5,5 @@ python-multipart>=0.0.9
 httpx>=0.27
 pydantic>=2.7
 mcp>=1.2          # 只有 MCP server（pidx/mcp_server.py）用到
+numpy>=1.26       # 节点向量的相似度计算
+pillow>=10        # 图片转单页 PDF

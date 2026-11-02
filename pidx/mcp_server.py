@@ -25,11 +25,25 @@ def _get(path, **params):
 
 
 @mcp.tool()
-def list_documents() -> str:
-    """List indexed documents: id, name, status, page count, description."""
-    docs = _get("/v1/documents", limit=500)["documents"]
-    return json.dumps([{k: d[k] for k in ("id", "name", "status", "pageNum", "description")} for d in docs],
-                      ensure_ascii=False, indent=1)
+def list_documents(collection_id: str | None = None) -> str:
+    """List indexed documents (PDF, images, Office files): id, name, format, status, page count, description,
+    and for files from a zip collection its collection id and path inside the zip."""
+    params = {"limit": 1000, **({"collection_id": collection_id} if collection_id else {})}
+    docs = _get("/v1/documents", **params)["documents"]
+    keys = ("id", "name", "format", "status", "pageNum", "description", "collectionId", "relPath")
+    return json.dumps([{k: d.get(k) for k in keys} for d in docs], ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def list_collections() -> str:
+    """List zip collections (folder trees of documents): id, name, status, file counts."""
+    return json.dumps(_get("/v1/collections")["collections"], ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def get_collection(collection_id: str) -> str:
+    """Folder tree of a zip collection, with folder summaries and each file's doc id, status and description."""
+    return json.dumps(_get(f"/v1/collections/{collection_id}"), ensure_ascii=False)
 
 
 @mcp.tool()
@@ -45,10 +59,13 @@ def get_pages(doc_id: str, pages: str) -> str:
 
 
 @mcp.tool()
-def search(query: str, doc_ids: list[str] | None = None, answer: bool = True, top_k: int = 5) -> str:
-    """Reasoning-based retrieval over the document trees. Returns the relevant sections (with text),
-    and if answer=True an answer with block-level citations (doc, page, bbox)."""
-    r = http.post("/v1/search", json={"query": query, "doc_ids": doc_ids, "answer": answer, "top_k": top_k})
+def search(query: str, doc_ids: list[str] | None = None, collection_id: str | None = None, answer: bool = True,
+           top_k: int = 5) -> str:
+    """Retrieval over the document trees (vector recall of subtrees + LLM reasoning). Scope: doc_ids, or one
+    zip collection, or the whole library. Returns the relevant sections (with text), and if answer=True an
+    answer with block-level citations (doc, page, bbox; bbox is null for Office files)."""
+    r = http.post("/v1/search", json={"query": query, "doc_ids": doc_ids, "collection_id": collection_id,
+                                      "answer": answer, "top_k": top_k})
     r.raise_for_status()
     return json.dumps(r.json(), ensure_ascii=False)
 

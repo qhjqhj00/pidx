@@ -1,0 +1,19 @@
+{
+  "_comment": "scripts/make_samples.py 生成的资料包（samples/xinghe.zip）里埋的事实。expect 里每一项都要出现在答案里（忽略空格和大小写），任选其一用 | 分隔。file 是答案所在文件，用来检查选文档对不对。",
+  "cases": [
+    {"tag": "docx 表格", "file": "项目建议书.docx", "q": "项目总投资多少？设备购置费占比多少？", "expect": ["1.38", "73.9"]},
+    {"tag": "docx 二级标题", "file": "项目建议书.docx", "q": "储能电站选址对用户年用电量有什么要求？", "expect": ["800"]},
+    {"tag": "docx 深层", "file": "技术方案.docx", "q": "电池舱内电芯最大温差要控制在多少以内？用的什么热管理方案？", "expect": ["3", "液冷"]},
+    {"tag": "docx 深层", "file": "技术方案.docx", "q": "可燃气体探测器的报警阈值是多少？", "expect": ["50"]},
+    {"tag": "pptx", "file": "立项评审会.pptx", "q": "立项评审会的投票结果如何？", "expect": ["6", "弃权"]},
+    {"tag": "xlsx 表格", "file": "2025年度预算.xlsx", "q": "2025 年第二季度设备采购预算是多少万元？", "expect": ["3600"]},
+    {"tag": "xlsx 多表", "file": "2025年度预算.xlsx", "q": "XH-05 电站的用户是谁，计划什么时候并网？", "expect": ["江阴港口物流中心", "2025-09|2025年9月|2025 年 9 月"]},
+    {"tag": "xlsx 说明页", "file": "2025年度预算.xlsx", "q": "预备费是怎么计提的？", "expect": ["3%"]},
+    {"tag": "xlsx 小表", "file": "2025Q3运行数据.xlsx", "q": "2025 年三季度 XH-03 电站的收益是多少万元？", "expect": ["62.4"]},
+    {"tag": "图片 OCR", "file": "电池舱铭牌.jpg", "q": "电池舱铭牌上的出厂编号是什么？", "expect": ["XH25040086"]},
+    {"tag": "图片 OCR", "file": "系统架构图.png", "q": "站控层 EMS 和 PCS 舱之间用什么协议通信？", "expect": ["61850"]},
+    {"tag": "webp OCR", "file": "安全告示.webp", "q": "动火作业需要办理什么手续？", "expect": ["一级动火证"]},
+    {"tag": "英文 docx", "file": "supplier-evaluation.docx", "q": "Which battery cell supplier ranked first and what was its quoted price?", "expect": ["Hengtai", "0.38"]},
+    {"tag": "跨文件", "file": "立项评审会.pptx", "q": "评审会对首批电站投运后提出了什么要求？首批有几座电站、什么时候并网？", "expect": ["3 个月|三个月", "4"]}
+  ]
+}

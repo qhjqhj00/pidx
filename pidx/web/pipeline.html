@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="static/page.css">
 </head>
 <body>
-<header><h1>pidx</h1><span>PDF → 树索引 → LLM 推理检索（无向量、无切块）</span>
+<header><h1>pidx</h1><span>PDF / 图片 / Office / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
   <nav><a href="./">演示</a><a href="pipeline" class="on">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
 
 <div class="layout">
@@ -19,6 +19,8 @@
   <a class="sub" href="#tree">② 建树</a>
   <a class="sub" href="#refine">③ 拆分超长节点</a>
   <a class="sub" href="#summary">④ 摘要与描述</a>
+  <a class="sub" href="#vectors">⑤ 节点向量</a>
+  <a class="sub" href="#zip">zip 资料包</a>
   <a href="#search">检索</a>
   <a class="sub" href="#s-docs">① 选文档</a>
   <a class="sub" href="#s-tree">② 树检索</a>
@@ -37,7 +39,8 @@
 <p>pidx 的做法：</p>
 <ul>
   <li>建索引时，为每份文档生成一棵<b>章节树</b>。每个节点有标题、页码范围和摘要，节点的原文是按位置精确切出来的，所以一节就是一个完整的检索单位，不会被切断。</li>
-  <li>检索时<b>不算相似度</b>。LLM 读整棵树的骨架（标题 + 页码 + 摘要），推理出该读哪几个节点，再读这些节点的原文作答。</li>
+  <li>检索时由 <b>LLM 推理</b>该读哪几个节点：它读树的骨架（标题 + 页码 + 摘要），再读选中节点的原文作答。树大了以后，先用节点向量<b>召回</b>最相关的几棵子树，LLM 只并行读这几棵子树，而不是整棵树。向量只负责缩小范围，选节点仍由 LLM 决定，取回的单位仍是完整的章节，而不是切块。</li>
+  <li>支持 PDF、图片、Word / PPT / Excel，以及带目录层级的 <b>zip 资料包</b>：目录本身成为树的上层节点，每个文件是一棵子树。</li>
   <li>答案中的论断会附上<b>版面块</b>引用（页码 + 坐标框），点开就能在原页上高亮。引用是 LLM 按提示词加的，大多数论断都会带，但不保证每一句都有。</li>
 </ul>
 
@@ -52,8 +55,8 @@
   <text x="8" y="22" style="fill:var(--muted);font-size:13px;font-weight:600">建索引（POST /v1/documents，后台异步）</text>
   <g style="font-size:13px">
     <rect x="8" y="36" width="110" height="64" rx="8" style="fill:var(--panel);stroke:var(--line)"/>
-    <text x="63" y="64" text-anchor="middle" style="fill:var(--ink);font-weight:600">PDF</text>
-    <text x="63" y="84" text-anchor="middle" style="fill:var(--muted);font-size:11px">文本型 / 扫描件</text>
+    <text x="63" y="64" text-anchor="middle" style="fill:var(--ink);font-weight:600">文件 / zip</text>
+    <text x="63" y="84" text-anchor="middle" style="fill:var(--muted);font-size:11px">PDF · 图片 · Office</text>
 
     <rect x="148" y="36" width="140" height="64" rx="8" style="fill:var(--panel);stroke:var(--s1);stroke-width:1.5"/>
     <text x="218" y="62" text-anchor="middle" style="fill:var(--s1);font-weight:600">① 解析</text>
@@ -124,12 +127,14 @@
 <h2 id="index">建索引</h2>
 
 <h3 id="parse">① 解析 <span class="muted" style="font-size:13px">pidx/parse.py</span></h3>
-<p>把 PDF 变成「页 → 版面块 → 行」。每个块有坐标框，后面的引用和高亮都靠它。</p>
+<p>把文件变成「页 → 版面块 → 行」。PDF 和图片的每个块有坐标框，后面的引用和高亮都靠它；Office 文件没有版面坐标，引用只能定位到块的文本。</p>
 <table>
   <tr><th style="width:150px">情况</th><th>做法</th></tr>
   <tr><td>文本型 PDF</td><td>用 PyMuPDF 取出字符片段（span），按垂直位置重组成行。有些老 PDF 会把每个单词拆成一"行"，重组能修好这个问题。字号不可信（比如 TeX 字体报 0.1）时，改用字形高度。每行记下字号、是否粗体、所属块、在页文本里的字符偏移。</td></tr>
   <tr><td>页眉页脚</td><td>出现在页面上下各 8% 区域、并且在 ≥25% 页上重复的行（比较前先把数字归一），以及页码，都从正文里去掉。这样它们不会混进节点原文，也不会被误当成标题。</td></tr>
   <tr><td>扫描件</td><td>平均每页不到 80 个字符就判为扫描件，转交 mineru.net 的云端 MinerU（OCR + 版面分析）；单文件上限 200 页，超出的在本地切段后分别上传，结果再按页码拼回。MinerU 的 <code>content_list</code> 会带出标题层级、表格（HTML）、图片和图表的说明文字，坐标从 0–1000 换算回 PDF 坐标。也可以用 <code>mode=ocr</code> 强制走这条路。</td></tr>
+  <tr><td>图片<br><span class="muted">png jpg jpeg jp2 webp gif bmp</span></td><td>上传时用 Pillow 包成单页 PDF（gif 取第一帧，150 dpi），之后完全按扫描件处理：MinerU OCR，引用能在原图上画框。</td></tr>
+  <tr><td>Office<br><span class="muted">doc docx ppt pptx xls xlsx</span></td><td>原文件直接交给 MinerU 解析，不转 PDF。MinerU 对 Office 不给坐标：Word 整篇是一页，PPT 一张幻灯片一页，Excel 一个工作表一页；Word 的标题样式会给出标题层级，表格是 HTML。pidx 把它们切成<b>虚拟页</b>：每页约 1500 token，尽量在标题前断开；表格转成 markdown，超长的表按行拆开并重复表头。PPT / Excel 的页带标签（「幻灯片 3」「工作表 2 · 电站清单」）。之后建树、摘要、检索都和 PDF 一样，只是没有页图，引用打开的是解析出的文本。</td></tr>
 </table>
 
 <h3 id="tree">② 建树 <span class="muted" style="font-size:13px">pidx/tree.py</span></h3>
@@ -154,19 +159,34 @@
 <ul>
   <li>叶子节点：2–4 句的 <code>summary</code>，写明涵盖的主题、实体、指标、表格和期间，目的是让 LLM 只看目录就能判断该不该读这一节。原文过长时取开头和结尾，约 6k token。</li>
   <li>父节点：用标题到第一个子节点之间的引言写 1–2 句 <code>prefix_summary</code>（引言太短就跳过）。</li>
-  <li>文档：用两层大纲加前两页，写 2–3 句 <code>description</code>，供多文档检索时挑文档用。同时用 bge-m3（SiliconFlow）算一个向量，只在文档很多时用来粗筛。</li>
+  <li>文档：用两层大纲加前两页，写 2–3 句 <code>description</code>，供多文档检索时挑文档用。</li>
   <li>所有节点并发处理（默认并发 24）。</li>
+</ul>
+
+<h3 id="vectors">⑤ 节点向量</h3>
+<p>每个节点算一个 bge-m3 向量（SiliconFlow），内容是「文件路径 + 标题路径 + 摘要」，例如 <code>02_财务/2025年度预算.xlsx · 电站清单：……</code>。文档描述也算一个。一份 200 页的文档约 100 个节点，几秒钟、几乎不花钱。向量服务不可用时跳过，检索自动退回纯 LLM 读树；之前索引的文档在服务启动时自动补算向量。</p>
+
+<h3 id="zip">zip 资料包</h3>
+<p><code>POST /v1/collections</code> 上传 zip。目录结构变成一棵<b>目录树</b>，每个支持格式的文件是一个普通文档：单独建索引，有自己的页、树和引用。全部文件索引完后，由下往上给每个目录写 1–2 句摘要（依据子目录摘要和文件描述）。</p>
+<ul>
+  <li>只有一个顶层目录时，把它当作根，不多出一层。</li>
+  <li>没有 UTF-8 标志的文件名按 GBK 解码（中文 Windows 打的包）。<code>__MACOSX</code>、隐藏文件、<code>~$</code> 临时文件直接忽略；不支持的格式、损坏的文件记进 <code>skipped</code>。</li>
+  <li>文件按生成的 id 写盘，压缩包里的路径不会落到文件系统上；文件数、单文件大小、解压总大小都有上限。</li>
 </ul>
 
 <h2 id="search">检索 <span class="muted" style="font-size:13px">pidx/search.py</span></h2>
 
 <h3 id="s-docs">① 选文档</h3>
-<p>指定了 <code>doc_ids</code> 就只搜这些文档。否则先看库里有多少文档：超过 20 篇时，先用 bge-m3 按问题和文档描述的相似度取前 20；超过 1 篇时，让 LLM 读这些文档的名字和描述，挑出需要查的（最多 5 篇，对比类问题会挑多篇）。</p>
+<p>指定了 <code>doc_ids</code> 就只搜这些文档，指定了 <code>collection_id</code> 就只搜这个资料包，否则搜全库。超过 1 篇时：先算问题向量，按「文档描述相似度、文档里最相似节点的相似度」两者取大给文档排序，取前 30 篇；再让 LLM 读这些候选，挑出需要查的（最多 5 篇，对比类问题会挑多篇）。资料包里的文件以<b>目录树</b>的形式给 LLM：目录名、目录摘要，下面是文件名和文件描述。</p>
 
 <h3 id="s-tree">② 树检索</h3>
-<p>把树渲染成缩进文本，每行是 <code>[node_id] 标题 (p.起-止) — 摘要</code>，交给 LLM。它返回一段推理（答案应该在哪、为什么）和最多 <code>top_k</code> 个节点 id。提示词要求它优先选最具体的节点；对比、合计、定义、脚注这类信息可能分散在几处的问题，要多选几个。</p>
+<p>把树渲染成缩进文本，每行是 <code>[node_id] 标题 (p.起-止) — 摘要</code>，交给 LLM。它返回一段推理（答案应该在哪、为什么）和最多 <code>top_k</code> 个节点 id。提示词要求它优先选最具体的节点；对比、合计、定义、脚注这类信息可能分散在几处的问题，要多选几个。有两种方式（请求参数 <code>retrieval</code>，默认 <code>hybrid</code>）：</p>
+<div class="card">
+  <p><span class="tag">hybrid</span><b>向量召回子树 + LLM 并行读</b>：把树切成若干<b>锚点子树</b>，每棵的骨架不超过约 3000 token。做法是从根往下走：放得下的相邻兄弟节点打包成一棵；放不下的节点自己不进包，它的子节点继续往下切，它本身作为祖先行显示在每棵子树的上方（也可以被选中）。所以子树的深度不是写死的，由树的大小决定。检索时，用问题向量给所有节点打分，子树的分数取其中最高的节点；每篇文档取前 3 棵，<b>并行</b>各发一次 LLM 调用，让它读这棵子树、给出相关度（0–3）和要读的节点。最后按相关度、再按各子树内的顺序轮流合并，取前 <code>top_k</code> 个。<br>
+  <span class="muted">例：美联储年报 108 个节点、骨架约 1.6 万 token，切成 13 棵子树。「Enforcement Actions」那道题并行读了 3 棵子树，整题（含作答）输入 8.9k token；读整棵树要 29.5k token。</span></p>
+  <p style="margin-bottom:0"><span class="tag">tree</span><b>LLM 读整棵树</b>：树骨架不超过 4 万 token 时一次给全；更大的树先只展开两层，其余标成 collapsed，LLM 可以要求展开感兴趣的节点，最多交互 4 轮。没有向量时也走这条路。</p>
+</div>
 <ul>
-  <li>树骨架不超过 4 万 token 时一次给全。更大的树先只展开两层，其余标成 collapsed，LLM 可以要求展开感兴趣的节点，最多交互 4 轮。</li>
   <li>如果同时选中了一个节点和它的祖先：祖先的原文不超过 1.2 万 token 就只读祖先，否则只读更具体的子孙，避免同一段原文读两遍。</li>
   <li>多文档时，各文档的树检索并行进行。</li>
 </ul>
@@ -177,7 +197,7 @@
 <h3 id="s-answer">④ 作答与补搜</h3>
 <p>LLM 只能依据这些原文作答，并在论断后面附上块标签。答案以 markdown 流式输出，最后一行是 <code>@@STATUS@@ {"sufficient", "missing"}</code>（这一行不会推送给前端）：</p>
 <ul>
-  <li><code>sufficient=false</code> 时，把"已经读过哪些节点、还缺什么"写进下一轮树检索的提示词，排除已读节点再找一轮（<code>max_rounds</code>，默认 2）。</li>
+  <li><code>sufficient=false</code> 时，把"已经读过哪些节点、还缺什么"写进下一轮树检索的提示词，排除已读节点再找一轮（<code>max_rounds</code>，默认 2）。hybrid 模式下，用「问题 + 缺什么」重新算向量，召回上一轮没读过的子树。</li>
   <li>答案里的块标签会映射回 <code>{doc_id, page, block_id, bbox, text}</code>，bbox 用千分比坐标，演示页据此在原页图上高亮。</li>
   <li>库里没有答案时，它会明确说没有。演示页里的「不编造」那道题就是测这个的。</li>
 </ul>
@@ -193,7 +213,8 @@
   <tr><td>建索引（建树、摘要、描述）</td><td>Atria-Dawn（tailnet 网关 :8100）</td><td>免费、256k 上下文，关闭 thinking，JSON 模式。调用量大，但没人在等，慢一点没关系。</td></tr>
   <tr><td>检索（选文档、树检索、作答）</td><td>DeepSeek V4 Flash（默认，关闭 thinking）</td><td>付费，约 200 tok/s，首 token &lt;1s。每次请求可以用 <code>llm</code> 参数切回 <code>default</code>（即建索引用的模型，默认是免费的 Atria，约 20 tok/s）。</td></tr>
   <tr><td>扫描件 OCR / 版面</td><td>MinerU 云端 API（mineru.net）</td><td>只有扫描件会用到。3 页扫描件约 20 秒；每天 1000 页高优先级额度，超出后排队变慢。</td></tr>
-  <tr><td>向量</td><td>BAAI/bge-m3（SiliconFlow API）</td><td>建索引时给文档描述算向量；文档超过 20 篇时用来粗筛；服务不可用时自动跳过。</td></tr>
+  <tr><td>向量</td><td>BAAI/bge-m3（SiliconFlow API）</td><td>建索引时给每个节点和文档描述算向量；检索时给文档排序、召回子树。服务不可用时自动退回纯 LLM 读树。向量存在 SQLite 里（float32），检索时用 numpy 算相似度，10 万个节点以内都是毫秒级。</td></tr>
+  <tr><td>Office / 图片解析</td><td>MinerU 云端 API</td><td>Office 文件和图片都要经过 MinerU；单个 Office 文件约 10–15 秒。</td></tr>
   <tr><td>存储</td><td>SQLite（<code>data/pidx.db</code>）+ 原 PDF</td><td>树以 JSON 存储，页文本和块坐标单独一张表。</td></tr>
 </table>
 
@@ -203,7 +224,8 @@
   <tr><td>树生成</td><td>Flash：纯版面规则，不用 LLM（开源）；LLM 只做摘要和修树</td><td>书签 → 版面候选交给 LLM 定结构（锚定到真实的行）→ LLM 读页并校验；超长节点递归拆分</td></tr>
   <tr><td>扫描件 / 图片</td><td>云版有 OCR 和图像理解</td><td>用 MinerU 做 OCR；图像只能用到图注（Atria 看不了图）</td></tr>
   <tr><td>引用</td><td>云版到块级（bbox）</td><td>块级（bbox，千分比坐标，和 PageIndex 一致）</td></tr>
-  <tr><td>检索</td><td>agent 在树上搜索</td><td>LLM 读树骨架选节点，大树分层展开，证据不足自动补搜</td></tr>
+  <tr><td>检索</td><td>agent 在树上搜索</td><td>节点向量召回子树，LLM 并行读子树选节点（也可以读整棵树），证据不足自动补搜</td></tr>
+  <tr><td>输入</td><td>PDF、Markdown</td><td>PDF、图片、Word / PPT / Excel（含老格式），zip 资料包（目录成树）</td></tr>
   <tr><td>接口</td><td>submit / get_tree / get_page_content / get_block / chat</td><td>同样形状的 REST 接口 + <code>/v1/search</code> + MCP</td></tr>
 </table>
 
@@ -212,7 +234,8 @@
   <li><b>看不了图</b>：图表里的数字只有出现在图注或 OCR 文本里时才能用上。要真正理解图表，需要接一个视觉模型（DeepInfra 上的 Qwen3-VL，或者把自建 gemma 开成多模态）。</li>
   <li><b>OCR 额度</b>：云端 MinerU 每天有 1000 页高优先级额度，大批量扫描件超出后会排队变慢。</li>
   <li><b>字体信息坏掉的 PDF</b>只能走策略 3，层级偶尔会放错（four-lectures.pdf 的第 3 章就有这个问题）。</li>
-  <li><b>延迟</b>：检索用 DeepSeek 时，13 道推荐问题平均 3.9 秒（中位数 2.9 秒，最长 7.4 秒）；用 Atria 时平均 37 秒。两者 66% 以上的时间都花在逐 token 生成上，详见演示页每次问答最后的瀑布图。</li>
+  <li><b>延迟</b>：检索用 DeepSeek 时，13 道推荐问题平均 3.6 秒（hybrid）/ 4.0 秒（tree），hybrid 平均输入 token 约为 tree 的一半；用 Atria 时平均 37 秒。大部分时间花在逐 token 生成上，详见演示页每次问答最后的瀑布图。</li>
+  <li><b>Office 文件没有原页高亮</b>：MinerU 不给 Office 的版面坐标，引用打开的是解析出的文本；「页」是按大小切的虚拟页。</li>
   <li><b>还没有系统评测</b>：目前只人工核对了演示页上的推荐问题。下一步用 10-K 问答集和向量 RAG、开源 PageIndex 做对比。</li>
 </ul>
 </main>

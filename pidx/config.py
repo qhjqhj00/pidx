@@ -70,6 +70,27 @@ MINERU_API = os.environ.get("PIDX_MINERU_API", "https://mineru.net/api/v4")
 MINERU_MODEL = os.environ.get("PIDX_MINERU_MODEL", "pipeline")      # pipeline | vlm
 MINERU_URL = os.environ.get("PIDX_MINERU_URL", "")
 
+# Input formats. PDFs and images get page images and bbox highlighting; Office files are parsed by
+# MinerU natively (no layout coordinates) and cut into "virtual pages" of about this many tokens.
+PDF_EXTS = {".pdf"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp"}
+OFFICE_EXTS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+SUPPORTED_EXTS = PDF_EXTS | IMAGE_EXTS | OFFICE_EXTS
+VIRTUAL_PAGE_TOKENS = _int("PIDX_VIRTUAL_PAGE_TOKENS", 1500)
+
+# Zip upload -> collection (directory tree + one document per supported file)
+ZIP_MAX_FILES = _int("PIDX_ZIP_MAX_FILES", 1000)
+ZIP_MAX_FILE_MB = _int("PIDX_ZIP_MAX_FILE_MB", 200)
+ZIP_MAX_TOTAL_MB = _int("PIDX_ZIP_MAX_TOTAL_MB", 2048)
+
+# Retrieval. "hybrid": node embeddings recall candidate subtrees (anchors, each small enough for one
+# prompt), then the LLM reads those subtrees in parallel. "tree": pure LLM reading of the whole tree
+# (layered expansion when it is too big). Hybrid falls back to tree when embeddings are unavailable.
+RETRIEVAL = os.environ.get("PIDX_RETRIEVAL", "hybrid")
+ANCHOR_TOKENS = _int("PIDX_ANCHOR_TOKENS", 3000)      # skeleton size of one anchor subtree
+ANCHORS_PER_DOC = _int("PIDX_ANCHORS_PER_DOC", 3)     # subtrees read in parallel per document
+DOC_SHORTLIST = _int("PIDX_DOC_SHORTLIST", 30)        # documents shown to the LLM when picking documents
+
 # Tree shape (same defaults as open-source PageIndex)
 MAX_PAGES_PER_NODE = _int("PIDX_MAX_PAGES_PER_NODE", 10)
 MAX_TOKENS_PER_NODE = _int("PIDX_MAX_TOKENS_PER_NODE", 20000)

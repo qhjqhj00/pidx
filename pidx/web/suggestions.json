@@ -1,39 +1,100 @@
 {
-  "_comment": "Showcase queries for the demo docs, keyed by document name. 'all' = searched across the whole library. Each was run and checked against the PDF on 2026-10-28.",
-  "2023-annual-report.pdf": [
-    {"tag": "深层定位", "q": "How many formal enforcement actions did the Federal Reserve complete in 2023, and what civil money penalties were assessed?",
-     "why": "答案在第 42 页的「Enforcement Actions」小节。书签里没有这一节，是建树时把 20 页的超长节点自动拆开得到的；检索直接命中这个第 3 层节点。"},
-    {"tag": "跨章节对比", "q": "How did the FOMC's characterization of inflation and the labor market change between the June 2023 and the March 2024 Monetary Policy Reports?",
-     "why": "要同时读两个同级节点（March 2024 Summary 和 June 2023 Summary）再对比，引用分布在 p.9-16。"},
-    {"tag": "表格数字", "q": "What is the total 2024 budget for Board operations and how does it compare with 2023 actual expenses?",
-     "why": "数字来自 p.158-163 的预算表格行和正文，引用能定位到表格里的具体一行。"},
-    {"tag": "多处汇总", "q": "What did the Federal Reserve do about crypto-asset supervision in 2023?",
-     "why": "相关内容散在三个章节（p.40、p.45、p.177 的附录 E），LLM 一次选出三个节点后汇总。"},
-    {"tag": "附录名录", "q": "Who is the chair of the board of directors of the Federal Reserve Bank of San Francisco?",
-     "why": "答案在第 140 多页的人员名录里。这种问题用向量检索很难命中，顺着树的结构找就能到。"},
-    {"tag": "两处印证", "q": "What were the Federal Reserve priced services' total revenue and net income in 2023?",
-     "why": "第 5 章正文和附表都写了这组数，答案把两处一起引用，可以互相核对。"}
-  ],
-  "q1-fy25-earnings.pdf": [
-    {"tag": "因果 + 指引", "q": "Why did Sports segment operating income improve in Q1 fiscal 2025, and what guidance did Disney give for full-year adjusted EPS?",
-     "why": "一半来自 Sports 节点（板块拆解），一半来自首页的 Guidance 节点。这份 PDF 没有书签，树是从版面里识别出来的。"},
-    {"tag": "指标 + 定义", "q": "How many paid Disney+ subscribers did Disney have at quarter end, and how is a paid subscriber defined?",
-     "why": "数字在 p.6 的指标表，口径定义在 p.16 的「Key Definitions」，两处要合起来才是完整答案。"}
-  ],
-  "earthmover.pdf": [
-    {"tag": "论文结论", "q": "How much faster is the proposed method than the baseline, and on which datasets was it evaluated?",
-     "why": "同时读实验、引言、结论三节，列出六个数据集的规模，每条都带引用。"}
-  ],
-  "earthmover-scanned-3p.pdf": [
-    {"tag": "扫描件 OCR", "q": "Which lower bound filters are used in the filter step of the framework?",
-     "why": "这个 PDF 每页都只是一张图片，没有文字层。走 MinerU OCR 后建树，引用的 bbox 仍然对得上原图。"}
-  ],
-  "all": [
-    {"tag": "跨文档", "q": "How much did Disney's Experiences segment operating income change in Q1 FY25, and what was the Fed's 2024 budget for Board operations?",
-     "why": "LLM 先读各文档的描述，选出要查的文档，再分别在两棵树里检索；引用会标明来自哪份文档（1: 和 2:）。"},
-    {"tag": "跨文档对比", "q": "Compare how the Federal Reserve and Disney each describe their outlook for 2024/2025: what are the key expectations stated in each document?",
-     "why": "开放式对比题，同时在两份文档里取证。"},
-    {"tag": "不编造", "q": "How many vehicles did Tesla deliver in Q4 2024?",
-     "why": "库里没有这个信息。系统搜完会如实说找不到，不会编一个数。"}
-  ]
+ "_comment": "Showcase queries for the demo docs, keyed by document name. 'all' = searched across the whole library. Each was run and checked against the PDF on 2026-10-28.",
+ "2023-annual-report.pdf": [
+  {
+   "tag": "深层定位",
+   "q": "How many formal enforcement actions did the Federal Reserve complete in 2023, and what civil money penalties were assessed?",
+   "why": "答案在第 42 页的「Enforcement Actions」小节。书签里没有这一节，是建树时把 20 页的超长节点自动拆开得到的；检索直接命中这个第 3 层节点。"
+  },
+  {
+   "tag": "跨章节对比",
+   "q": "How did the FOMC's characterization of inflation and the labor market change between the June 2023 and the March 2024 Monetary Policy Reports?",
+   "why": "要同时读两个同级节点（March 2024 Summary 和 June 2023 Summary）再对比，引用分布在 p.9-16。"
+  },
+  {
+   "tag": "表格数字",
+   "q": "What is the total 2024 budget for Board operations and how does it compare with 2023 actual expenses?",
+   "why": "数字来自 p.158-163 的预算表格行和正文，引用能定位到表格里的具体一行。"
+  },
+  {
+   "tag": "多处汇总",
+   "q": "What did the Federal Reserve do about crypto-asset supervision in 2023?",
+   "why": "相关内容散在三个章节（p.40、p.45、p.177 的附录 E），LLM 一次选出三个节点后汇总。"
+  },
+  {
+   "tag": "附录名录",
+   "q": "Who is the chair of the board of directors of the Federal Reserve Bank of San Francisco?",
+   "why": "答案在第 140 多页的人员名录里。这种问题用向量检索很难命中，顺着树的结构找就能到。"
+  },
+  {
+   "tag": "两处印证",
+   "q": "What were the Federal Reserve priced services' total revenue and net income in 2023?",
+   "why": "第 5 章正文和附表都写了这组数，答案把两处一起引用，可以互相核对。"
+  }
+ ],
+ "q1-fy25-earnings.pdf": [
+  {
+   "tag": "因果 + 指引",
+   "q": "Why did Sports segment operating income improve in Q1 fiscal 2025, and what guidance did Disney give for full-year adjusted EPS?",
+   "why": "一半来自 Sports 节点（板块拆解），一半来自首页的 Guidance 节点。这份 PDF 没有书签，树是从版面里识别出来的。"
+  },
+  {
+   "tag": "指标 + 定义",
+   "q": "How many paid Disney+ subscribers did Disney have at quarter end, and how is a paid subscriber defined?",
+   "why": "数字在 p.6 的指标表，口径定义在 p.16 的「Key Definitions」，两处要合起来才是完整答案。"
+  }
+ ],
+ "earthmover.pdf": [
+  {
+   "tag": "论文结论",
+   "q": "How much faster is the proposed method than the baseline, and on which datasets was it evaluated?",
+   "why": "同时读实验、引言、结论三节，列出六个数据集的规模，每条都带引用。"
+  }
+ ],
+ "earthmover-scanned-3p.pdf": [
+  {
+   "tag": "扫描件 OCR",
+   "q": "Which lower bound filters are used in the filter step of the framework?",
+   "why": "这个 PDF 每页都只是一张图片，没有文字层。走 MinerU OCR 后建树，引用的 bbox 仍然对得上原图。"
+  }
+ ],
+ "all": [
+  {
+   "tag": "跨文档",
+   "q": "How much did Disney's Experiences segment operating income change in Q1 FY25, and what was the Fed's 2024 budget for Board operations?",
+   "why": "LLM 先读各文档的描述，选出要查的文档，再分别在两棵树里检索；引用会标明来自哪份文档（1: 和 2:）。"
+  },
+  {
+   "tag": "跨文档对比",
+   "q": "Compare how the Federal Reserve and Disney each describe their outlook for 2024/2025: what are the key expectations stated in each document?",
+   "why": "开放式对比题，同时在两份文档里取证。"
+  },
+  {
+   "tag": "不编造",
+   "q": "How many vehicles did Tesla deliver in Q4 2024?",
+   "why": "库里没有这个信息。系统搜完会如实说找不到，不会编一个数。"
+  }
+ ],
+ "coll:星河储能项目资料": [
+  {
+   "tag": "Excel 表格",
+   "q": "XH-05 电站的用户是谁，计划什么时候并网？",
+   "why": "资料包里有 10 个文件。先按向量给文件排序，LLM 看目录树和文件描述选中《2025年度预算.xlsx》，答案在第 2 个工作表「电站清单」里。Office 文件没有版面坐标，引用会打开解析出的文本并标出对应行。"
+  },
+  {
+   "tag": "图片 OCR",
+   "q": "电池舱铭牌上的出厂编号是什么？",
+   "why": "答案在「03_技术/现场照片」里的一张 jpg 上。图片先包成单页 PDF 再走 MinerU OCR，引用能在原图上画框。"
+  },
+  {
+   "tag": "PPT + Word",
+   "q": "评审会对首批电站投运后提出了什么要求？项目总投资和内部收益率是多少？",
+   "why": "一半在评审会 PPT 的「评审结论」页，一半在项目建议书 Word 的「投资估算」「经济效益」两章。"
+  },
+  {
+   "tag": "深层小节",
+   "q": "可燃气体探测器的报警阈值是多少？电池舱用什么灭火方式？",
+   "why": "《技术方案.docx》第 4 章下的两个二级小节；Word 的标题样式被 MinerU 识别成标题层级，直接成了树节点。"
+  }
+ ]
 }

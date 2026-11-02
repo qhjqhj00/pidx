@@ -100,16 +100,35 @@ label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px}
 .modal .pane h3{margin:0 0 6px;font-size:14px;display:flex;gap:10px;align-items:center}
 .modal .pane h3 .x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:20px;line-height:1}
 .modal img{width:100%;border:1px solid var(--line);border-radius:4px;background:#fff}
+.coll{padding:8px;border-radius:6px;cursor:pointer;border:1px solid transparent}
+.coll:hover{background:var(--accent-soft)}
+.coll.sel{border-color:var(--accent);background:var(--accent-soft)}
+.coll .n{font-weight:600;word-break:break-all}
+.coll .m{font-size:12px;color:var(--muted)}
+.fmt{display:inline-block;font:10.5px ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;margin-right:4px;text-transform:uppercase}
+.crumb{font-size:12px;color:var(--muted);margin-bottom:6px}
+.crumb a{color:var(--accent);cursor:pointer}
+.fileRow{display:flex;gap:6px;align-items:baseline;cursor:pointer;border-radius:4px;padding:2px 4px}
+.fileRow:hover{background:var(--accent-soft)}
+.fileRow .pg{font-size:11px;color:var(--muted);white-space:nowrap}
+.dirSum{font-size:12px;color:var(--muted);margin:0 0 4px 22px}
+.anc{font-size:12px;margin:3px 0;padding:3px 6px;border-radius:4px;background:var(--bg)}
+.anc.r0{opacity:.55}
+.anc b{font-weight:600}
+.txtpage{white-space:pre-wrap;font-size:13px;line-height:1.6;border:1px solid var(--line);border-radius:4px;padding:10px 12px;max-height:70vh;overflow:auto;background:var(--bg)}
+.txtpage mark{background:var(--hl);color:inherit;border-radius:2px}
+select.sm{font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px}
 .modal .quote{font-size:12.5px;color:var(--muted);border-left:3px solid #f2a33a;padding:2px 8px;margin:6px 0 10px}
 </style>
 </head>
 <body>
-<header><h1>pidx</h1><span>PDF → 树索引 → LLM 推理检索（无向量、无切块）</span>
+<header><h1>pidx</h1><span>PDF / 图片 / Office / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
   <nav><a href="./" class="on">演示</a><a href="pipeline">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
 <main>
   <section>
     <h2>文档 <span id="cnt"></span></h2>
-    <div class="up"><input type="file" id="file" accept="application/pdf"></div>
+    <div class="up"><input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.zip">
+      <div class="meta" style="margin-top:4px">PDF、图片、Word / PPT / Excel，或带目录的 zip 包</div></div>
     <div class="scroll" id="docs"></div>
   </section>
   <section>
@@ -120,9 +139,10 @@ label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px}
     <h2>检索 / 问答</h2>
     <div class="q">
       <textarea id="query" placeholder="问一个关于文档的问题…"></textarea>
-      <label><input type="checkbox" id="all"> 搜全部文档</label>
+      <label>范围 <select id="scope" class="sm"><option value="doc">当前文档</option><option value="coll">当前资料包</option><option value="all">全库</option></select></label>
+      <label>召回 <select id="retrieval" class="sm"><option value="hybrid">向量召回子树 + LLM</option><option value="tree">纯 LLM 读树</option></select></label>
       <label><input type="checkbox" id="ans" checked> 生成答案</label>
-      <label>模型 <select id="llm" style="font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px"></select></label>
+      <label>模型 <select id="llm" class="sm"></select></label>
       <span style="flex:1"></span>
       <button id="go">检索</button>
     </div>
@@ -142,38 +162,75 @@ async function api(path, opts) {
   return r.json();
 }
 
+let collsCache = [], curColl = null;
+const fmtBadge = d => d.format && d.format !== "pdf" ? `<span class="fmt">${esc((d.name.split(".").pop() || d.format))}</span>` : "";
+const pgWord = d => d.format === "office" ? "段" : "页";
+
 async function loadDocs() {
-  const {documents, total} = await api("v1/documents?limit=200");
-  docsCache = documents;
+  const [{documents, total}, {collections}] = await Promise.all([api("v1/documents?limit=1000"), api("v1/collections")]);
+  docsCache = documents; collsCache = collections;
   renderSugg();
-  $("#cnt").textContent = total;
-  $("#docs").innerHTML = documents.map(d => `
+  const standalone = documents.filter(d => !d.collectionId);
+  $("#cnt").textContent = `${collections.length ? collections.length + " 个资料包 · " : ""}${total} 份文档`;
+  $("#docs").innerHTML = collections.map(c => {
+    const k = c.counts || {}, done = k.completed || 0, n = c.info?.files || 0;
+    return `<div class="coll ${curColl===c.id && !cur ? "sel" : ""}" data-cid="${c.id}">
+      <div class="n">📁 ${esc(c.name)}</div>
+      <div class="m"><span class="st-${c.status}">${c.status}</span> · ${done}/${n} 个文件已索引${k.failed ? ` · <span class="st-failed">${k.failed} 失败</span>` : ""}${c.info?.skipped?.length ? ` · 跳过 ${c.info.skipped.length}` : ""}</div></div>`;
+  }).join("") + standalone.map(d => `
     <div class="doc ${cur===d.id?"sel":""}" data-id="${d.id}">
-      <div class="n">${esc(d.name)}</div>
-      <div class="m"><span class="st-${d.status}">${d.status}</span> · ${d.pageNum ?? "?"} 页${d.info ? " · " + d.info.nodes + " 节点 · " + d.info.method : ""}</div>
-    </div>`).join("") || '<div class="empty">上传一个 PDF</div>';
-  document.querySelectorAll(".doc").forEach(el => el.onclick = () => selectDoc(el.dataset.id));
-  if (documents.some(d => d.status === "queued" || d.status === "processing")) setTimeout(loadDocs, 3000);
+      <div class="n">${fmtBadge(d)}${esc(d.name)}</div>
+      <div class="m"><span class="st-${d.status}">${d.status}</span> · ${d.pageNum ?? "?"} ${pgWord(d)}${d.info ? " · " + d.info.nodes + " 节点 · " + d.info.method : ""}</div>
+    </div>`).join("") || (collections.length ? "" : '<div class="empty">上传一个文件或 zip 包</div>');
+  document.querySelectorAll(".doc").forEach(el => el.onclick = () => { curColl = null; selectDoc(el.dataset.id); });
+  document.querySelectorAll(".coll").forEach(el => el.onclick = () => selectColl(el.dataset.cid));
+  const busy = documents.some(d => d.status === "queued" || d.status === "processing") || collections.some(c => c.status === "processing");
+  if (busy) setTimeout(loadDocs, 3000);
   if (cur && documents.find(d => d.id === cur)?.status === "completed" && !$("#tree .tn")) selectDoc(cur);
+  else if (!cur && curColl && busy) selectColl(curColl, true);
+}
+
+async function selectColl(cid, quiet) {
+  curColl = cid; cur = null;
+  if (!quiet) { $("#scope").value = "coll"; renderSugg(); }
+  document.querySelectorAll(".doc,.coll").forEach(el => el.classList.toggle("sel", el.dataset.cid === cid));
+  const c = await api(`v1/collections/${cid}`);
+  $("#treeTitle").textContent = "📁 " + c.name;
+  $("#treeMeta").textContent = `${c.info?.files || 0} 个文件 · ${c.info?.dirs || 0} 个目录`;
+  const skipped = c.info?.skipped?.length ? `<div class="box"><h3>跳过的文件</h3>${c.info.skipped.map(x => `<div class="meta">${esc(x.path)} — ${esc(x.reason)}</div>`).join("")}</div>` : "";
+  const dir = (n, top) => {
+    const kids = n.nodes.map(x => x.type === "dir" ? dir(x) : `<div class="tn"><div class="fileRow" data-doc="${x.doc_id}"><span class="tg">·</span>${fmtBadge({name: x.title, format: x.format})}<span>${esc(x.title)}</span><span class="pg st-${x.status}">${x.status === "completed" ? (x.pageNum ?? "") + " " + pgWord(x) : x.status}</span></div>${x.description ? `<div class="dirSum">${esc(x.description)}</div>` : ""}</div>`).join("");
+    if (top) return (n.summary ? `<div class="box"><h3>资料包概要</h3>${esc(n.summary)}</div>` : "") + kids;
+    return `<div class="tn"><div class="row"><span class="tg">▾</span><span>📂 ${esc(n.title)}</span></div>${n.summary ? `<div class="dirSum">${esc(n.summary)}</div>` : ""}<div class="kids">${kids}</div></div>`;
+  };
+  $("#tree").innerHTML = dir(c.tree, true) + skipped;
+  document.querySelectorAll("#tree .row").forEach(r => r.onclick = () => r.parentElement.classList.toggle("fold"));
+  document.querySelectorAll("#tree .fileRow").forEach(r => r.onclick = () => selectDoc(r.dataset.doc));
 }
 
 async function selectDoc(id) {
   cur = id;
+  const d = docsCache.find(x => x.id === id);
+  if (d?.collectionId) curColl = d.collectionId;
+  if ($("#scope").value !== "all") $("#scope").value = "doc";
   renderSugg();
   document.querySelectorAll(".doc").forEach(el => el.classList.toggle("sel", el.dataset.id === id));
-  const d = docsCache.find(x => x.id === id);
+  document.querySelectorAll(".coll").forEach(el => el.classList.remove("sel"));
   $("#treeTitle").textContent = d?.name || "树索引";
-  if (d?.status !== "completed" && !d?.info) { $("#tree").innerHTML = `<div class="empty">${esc(d?.status)}… ${esc(d?.error||"")}</div>`; $("#treeMeta").textContent=""; return; }
+  const crumb = d?.collectionId ? `<div class="crumb"><a data-back="${d.collectionId}">📁 ${esc(collsCache.find(c => c.id === d.collectionId)?.name || "资料包")}</a> / ${esc(d.relPath || d.name)}</div>` : "";
+  if (d?.status !== "completed" && !d?.info) { $("#tree").innerHTML = crumb + `<div class="empty">${esc(d?.status)}… ${esc(d?.error||"")}</div>`; $("#treeMeta").textContent=""; bindCrumb(); return; }
   const t = await api(`v1/documents/${id}/tree?node_summary=true`);
   const i = d.info || {};
-  $("#treeMeta").textContent = `${i.method} · ${i.nodes} 节点 · ${i.seconds ? Object.values(i.seconds).reduce((a,b)=>a+b,0).toFixed(0)+"s" : ""}`;
-  $("#tree").innerHTML = (d.description ? `<div class="box"><h3>文档描述</h3>${esc(d.description)}</div>` : "") + t.result.map(renderNode).join("");
+  $("#treeMeta").textContent = `${i.method} · ${i.nodes} 节点${i.node_vectors ? " · " + i.node_vectors + " 向量" : ""} · ${i.seconds ? Object.values(i.seconds).reduce((a,b)=>a+b,0).toFixed(0)+"s" : ""}`;
+  $("#tree").innerHTML = crumb + (d.description ? `<div class="box"><h3>文档描述</h3>${esc(d.description)}</div>` : "") + t.result.map(renderNode).join("");
+  bindCrumb();
   document.querySelectorAll("#tree .row").forEach(r => r.onclick = e => {
     const tn = r.parentElement;
     if (e.target.classList.contains("tg") && tn.querySelector(".kids")) tn.classList.toggle("fold");
     else { tn.classList.toggle("open"); showPage(cur, +r.dataset.page, []); }
   });
 }
+function bindCrumb() { document.querySelectorAll("[data-back]").forEach(a => a.onclick = () => selectColl(a.dataset.back)); }
 
 function renderNode(n) {
   const kids = n.nodes?.length ? `<div class="kids">${n.nodes.map(renderNode).join("")}</div>` : "";
@@ -214,15 +271,17 @@ fetch("static/suggestions.json").then(r => r.json()).then(j => { SUGG = j; rende
 
 function renderSugg() {
   const name = docsCache.find(d => d.id === cur)?.name;
-  const mine = (SUGG[name] || []).map(s => ({...s, all: false}));
+  const cname = !cur && curColl ? collsCache.find(c => c.id === curColl)?.name : null;
+  const mine = cname ? (SUGG["coll:" + cname] || []).map(s => ({...s, all: false, coll: true}))
+                     : (SUGG[name] || []).map(s => ({...s, all: false}));
   const all = (SUGG.all || []).map(s => ({...s, all: true}));
   const list = [...mine, ...all];
   $("#sugg").style.display = list.length ? "" : "none";
   $("#sugg").innerHTML = `<div class="lbl">推荐问题（点击直接运行${mine.length ? "" : "；左侧选中演示文档会出现更多"}）</div>` +
-    list.map((s, i) => `<button class="chip" data-i="${i}" title="${esc(s.why)}"><b>${esc(s.tag)}${s.all ? " · 全库" : ""}</b><span>${esc(s.q)}</span></button>`).join("");
+    list.map((s, i) => `<button class="chip" data-i="${i}" title="${esc(s.why)}"><b>${esc(s.tag)}${s.all ? " · 全库" : s.coll ? " · 资料包" : ""}</b><span>${esc(s.q)}</span></button>`).join("");
   document.querySelectorAll(".chip").forEach(el => el.onclick = () => {
     const s = list[+el.dataset.i];
-    $("#query").value = s.q; $("#all").checked = s.all; curWhy = `<b>${esc(s.tag)}</b>：${esc(s.why)}`;
+    $("#query").value = s.q; $("#scope").value = s.all ? "all" : s.coll ? "coll" : "doc"; curWhy = `<b>${esc(s.tag)}</b>：${esc(s.why)}`;
     run(true);
   });
 }
@@ -247,7 +306,9 @@ async function run(fromChip) {
   if (fromChip !== true) curWhy = "";
   const q = $("#query").value.trim();
   if (!q) return;
-  if (!$("#all").checked && !cur) { alert("先选一个文档，或勾选“搜全部文档”"); return; }
+  const scope = $("#scope").value;
+  if (scope === "doc" && !cur) { alert("先选一个文档，或把范围改成“全库”"); return; }
+  if (scope === "coll" && !curColl) { alert("先选一个资料包（zip），或把范围改成“全库”"); return; }
   $("#go").disabled = true;
   document.querySelectorAll("#tree .row.hit").forEach(el => el.classList.remove("hit"));
   $("#out").innerHTML = `${curWhy ? `<div class="why">${curWhy}</div>` : ""}<div class="tl" id="tl"></div>`;
@@ -256,10 +317,11 @@ async function run(fromChip) {
   head.querySelector(".bd").textContent = q;
   ticker = setInterval(() => head.querySelector(".tm").textContent = "已用 " + T((performance.now() - t0) / 1000), 200);
   qDocs = [];
-  let ansText = "", answerOn = $("#ans").checked, round = 1;
+  let ansText = "", answerOn = $("#ans").checked, round = 1, libSize = 0;
   try {
     const resp = await fetch("v1/search/stream", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({query: q, doc_ids: $("#all").checked ? null : [cur], answer: answerOn, top_k: 5, include_text: false, llm: $("#llm").value || null})});
+      body: JSON.stringify({query: q, doc_ids: scope === "doc" ? [cur] : null, collection_id: scope === "coll" ? curColl : null,
+        retrieval: $("#retrieval").value, answer: answerOn, top_k: 5, include_text: false, llm: $("#llm").value || null})});
     if (!resp.ok) throw new Error(await resp.text());
     const reader = resp.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -284,9 +346,15 @@ async function run(fromChip) {
     const t = ev.t;
     switch (ev.type) {
     case "start": {
-      head.querySelector(".bd").innerHTML = `${esc(q)}<div class="meta">检索范围：${ev.library.length} 份文档 · 模型：${esc(ev.llm)}</div>`;
-      if (ev.library.length > 1)
-        step("st-docs", "1", "选文档：LLM 读文档描述，决定查哪几份").querySelector(".bd").innerHTML = '<div class="spin">正在读 ' + ev.library.length + ' 份文档的描述</div><div class="llm"></div>';
+      head.querySelector(".bd").innerHTML = `${esc(q)}<div class="meta">检索范围：${ev.library.length} 份文档 · 召回：${ev.retrieval === "hybrid" ? "向量召回子树 + LLM" : "纯 LLM 读树"} · 模型：${esc(ev.llm)}</div>`;
+      libSize = ev.library.length;
+      break; }
+    case "embed": {
+      const el = step("st-emb", "⋯", "向量召回：问题 → bge-m3 向量");
+      el.querySelector(".bd").innerHTML = ev.ok ? `<div class="meta">${ev.ms} ms；用它给文档排序、给每棵树召回最相关的子树</div>` : `<div class="meta">向量服务不可用，退回纯 LLM 读树</div>`;
+      finish(el, t, ev.ok ? "done" : "warn");
+      if (libSize > 1)
+        step("st-docs", "1", "选文档：按向量排序，LLM 读候选文档的描述（和资料包目录）").querySelector(".bd").innerHTML = '<div class="spin">正在读 ' + libSize + ' 份文档的描述</div><div class="llm"></div>';
       break; }
     case "llm": {
       const lab = ev.label;
@@ -298,21 +366,27 @@ async function run(fromChip) {
     case "docs": {
       qDocs = ev.selected;
       if (ev.skipped) break;
-      const el = step("st-docs", "1", "选文档：LLM 读文档描述，决定查哪几份");
+      const el = step("st-docs", "1", "选文档：按向量排序，LLM 读候选文档的描述（和资料包目录）");
       el.querySelector(".spin")?.remove();
+      const sl = ev.shortlist?.length && ev.shortlist[0].score !== null ? `<div class="meta">向量排序前 ${ev.shortlist.length}：${ev.shortlist.map(x => `${esc(x.name)} <i>${x.score}</i>`).join(" · ")}</div>` : "";
       el.querySelector(".bd").insertAdjacentHTML("afterbegin",
-        `<div class="think">${esc(ev.thinking)}</div><div>选中：${ev.selected.map(d => `<span class="nchip">${esc(d.name)}</span>`).join("")}</div>`);
+        `${sl}<div class="think">${esc(ev.thinking)}</div><div>选中：${ev.selected.map(d => `<span class="nchip">${esc(d.rel_path || d.name)}</span>`).join("")}</div>`);
       finish(el, t);
       break; }
     case "tree_search_start": {
       round = ev.round;
-      const el = step("st-tree-" + round, "2", round > 1 ? `树检索 · 第 ${round} 轮（补搜）` : "树检索：LLM 读整棵树的标题 + 摘要，推理答案在哪");
+      const el = step("st-tree-" + round, "2", (round > 1 ? `树检索 · 第 ${round} 轮（补搜）` : "树检索") +
+        (ev.mode === "hybrid" ? "：向量召回最相关的几棵子树，LLM 并行读它们的标题 + 摘要" : "：LLM 读整棵树的标题 + 摘要，推理答案在哪"));
       el.querySelector(".bd").innerHTML = ev.docs.map(n => `<div class="sub" id="ts-${round}-${slug(n)}"><div class="nm">${esc(n)}</div><div class="spin">正在阅读树索引</div><div class="llm"></div></div>`).join("");
       break; }
     case "tree_search": {
       const sub = document.getElementById(`ts-${ev.round}-${slug(ev.doc_name)}`);
-      const how = ev.how?.mode === "full" ? `整棵树 ≈${ev.how.tree_tokens} tok 一次读完` : `大树分层展开：${(ev.how?.expanded || []).join(", ") || "未展开"}`;
-      sub.querySelector(".spin").outerHTML = `<div class="meta">${how}</div><div class="think">${esc(ev.thinking)}</div>
+      let how;
+      if (ev.how?.mode === "hybrid")
+        how = `全树切成 ${ev.how.anchors_total} 棵子树，召回 ${ev.how.anchors.length} 棵并行阅读：` + ev.how.anchors.map(a =>
+          `<div class="anc r${a.relevance}"><b>${esc(a.label)}</b> <i class="meta">向量 ${a.score} · LLM 相关度 ${a.relevance}/3 · 选 ${a.nodes.length} 个</i></div>`).join("");
+      else how = ev.how?.mode === "full" ? `整棵树 ≈${ev.how.tree_tokens} tok 一次读完` : `大树分层展开：${(ev.how?.expanded || []).join(", ") || "未展开"}`;
+      sub.querySelector(".spin").outerHTML = `<div class="meta">${how}</div><div class="think" style="white-space:pre-wrap">${esc(ev.thinking)}</div>
         <div>${ev.nodes.map(n => `<span class="nchip" data-doc="${n.doc_id}" data-page="${n.start_index}">[${n.node_id}] ${esc(n.title)} <i>p.${n.start_index}–${n.end_index}</i></span>`).join("") || '<span class="meta">没有相关节点</span>'}</div>`;
       if (ev.doc_id === cur) markTree(ev.nodes.map(n => n.node_id));
       const st = document.getElementById("st-tree-" + ev.round);
@@ -397,12 +471,26 @@ function waterfall(tm) {
     其中选文档 / 树检索输出 ${thinkOut} token、生成用了 ${T(thinkDec)}，大部分是 LLM 写的推理说明。</div>`;
 }
 
-function showPage(docId, page, blocks, text) {
-  const name = docsCache.find(d => d.id === docId)?.name || docId;
-  $("#modalPane").innerHTML = `<h3>${esc(name)} · 第 ${page} 页 <a href="v1/documents/${docId}/file#page=${page}" target="_blank">打开 PDF</a>
-      ${blocks.length ? `<span class="meta">高亮 ${blocks.length} 个引用块</span>` : ""}<span class="x" title="关闭">×</span></h3>
-    ${text ? `<div class="quote">${esc(text.slice(0, 400))}</div>` : ""}
-    <img src="v1/documents/${docId}/pages/${page}/image?zoom=2&highlight=${blocks.join(",")}" alt="page ${page}">`;
+async function showPage(docId, page, blocks, text) {
+  const d = docsCache.find(x => x.id === docId);
+  const name = d?.relPath || d?.name || docId;
+  const quote = text ? `<div class="quote">${esc(text.slice(0, 400))}</div>` : "";
+  if (!d || d.pageImages) {
+    $("#modalPane").innerHTML = `<h3>${esc(name)} · 第 ${page} 页 <a href="v1/documents/${docId}/file#page=${page}" target="_blank">打开原文件</a>
+        ${blocks.length ? `<span class="meta">高亮 ${blocks.length} 个引用块</span>` : ""}<span class="x" title="关闭">×</span></h3>
+      ${quote}<img src="v1/documents/${docId}/pages/${page}/image?zoom=2&highlight=${blocks.join(",")}" alt="page ${page}">`;
+    $("#modal").classList.add("on");
+    return;
+  }
+  // Office: no page image; show the virtual page's text with the cited blocks marked
+  const [pg, ...bl] = await Promise.all([api(`v1/documents/${docId}/pages?pages=${page}`),
+    ...blocks.map(b => api(`v1/documents/${docId}/blocks/${b}`).catch(() => null))]);
+  const p = pg.pages[0] || {markdown: ""};
+  let html = esc(p.markdown);
+  for (const b of bl.filter(Boolean)) { const t = esc(b.text); if (t) html = html.split(t).join(`<mark>${t}</mark>`); }
+  $("#modalPane").innerHTML = `<h3>${esc(name)} · ${esc(p.label || "第 " + page + " 段")} <a href="v1/documents/${docId}/file" target="_blank">下载原文件</a>
+      ${blocks.length ? `<span class="meta">标出 ${blocks.length} 个引用块（Office 文件没有版面坐标，显示解析出的文本）</span>` : ""}<span class="x" title="关闭">×</span></h3>
+    ${quote}<div class="txtpage">${html}</div>`;
   $("#modal").classList.add("on");
 }
 $("#modal").onclick = e => { if (e.target.id === "modal" || e.target.classList.contains("x")) $("#modal").classList.remove("on"); };
@@ -413,8 +501,16 @@ $("#query").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaK
 $("#file").onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   const fd = new FormData(); fd.append("file", f);
-  const r = await api("v1/documents", {method: "POST", body: fd});
-  cur = r.doc_id; e.target.value = ""; loadDocs();
+  e.target.value = "";
+  try {
+    if (f.name.toLowerCase().endsWith(".zip")) {
+      const r = await api("v1/collections", {method: "POST", body: fd});
+      await loadDocs(); selectColl(r.collection_id);
+    } else {
+      const r = await api("v1/documents", {method: "POST", body: fd});
+      cur = r.doc_id; curColl = null; loadDocs();
+    }
+  } catch (err) { alert("上传失败：" + err.message); }
 };
 fetch("v1/llm").then(r => r.json()).then(j => {
   $("#llm").innerHTML = j.backends.map(b => `<option value="${b.name}" ${b.name === j.default ? "selected" : ""}>${esc(b.label)}</option>`).join("");

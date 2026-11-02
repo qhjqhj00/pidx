@@ -1,15 +1,51 @@
-"""Indexing pipeline and the background job queue."""
+"""Indexing pipeline and the background job queue.
+
+Queue items are document ids ("pi-…") or collection ids ("pc-…"); a collection job writes the
+directory summaries once all of its files are indexed.
+"""
 
 import asyncio
 import logging
 import time
 import traceback
 
-from . import config, llm, parse, store, tree
+from . import collection, config, llm, parse, store, tree
 
 log = logging.getLogger("pidx.indexer")
 
 _queue: asyncio.Queue | None = None
+_coll_pending: set[str] = set()
+
+
+def node_embed_text(doc: dict, path: list[str], n: dict, pages=None) -> str:
+    """What a node vector represents: where it sits (doc, folder, title path) and what it says."""
+    where = doc["name"] if not doc.get("rel_path") else doc["rel_path"]
+    s = n.get("summary") or n.get("prefix_summary") or ""
+    if not s and pages is not None:
+        s = tree.text_between(pages, tuple(n["start"]), tuple(n["text_end"]) if n.get("text_end") else None)[:600]
+    return f"{where}\n{' > '.join(path + [n['title']])}\n{s}".strip()
+
+
+async def embed_nodes(doc: dict, nodes: list, pages=None) -> int:
+    """One bge-m3 vector per tree node. Returns the count (0 if the embedding service is off)."""
+    items = []
+
+    def visit(ns, path):
+        for n in ns:
+            items.append((n["node_id"], node_embed_text(doc, path, n, pages)))
+            visit(n["nodes"], path + [n["title"]])
+
+    visit(nodes, [])
+    if not items:
+        return 0
+    vecs = []
+    for i in range(0, len(items), 32):
+        v = await llm.embed([t for _, t in items[i:i + 32]])
+        if v is None:
+            return 0
+        vecs.extend(v)
+    store.save_node_vectors(doc["id"], [(nid, v) for (nid, _), v in zip(items, vecs)])
+    return len(vecs)
 
 
 async def index_document(doc_id: str) -> None:
@@ -18,7 +54,8 @@ async def index_document(doc_id: str) -> None:
     store.update_document(doc_id, status="processing", error=None)
     t0 = time.time()
     used = llm.new_scope()
-    parsed = await asyncio.to_thread(parse.parse_pdf, doc["path"], opts.get("mode", "auto"))
+    parsed = await asyncio.to_thread(parse.parse_file, doc["path"], doc["format"], opts.get("mode", "auto"),
+                                     doc.get("pdf_path"))
     pages = parsed["pages"]
     store.save_pages(doc_id, pages)
     store.update_document(doc_id, page_count=len(pages))
@@ -31,38 +68,88 @@ async def index_document(doc_id: str) -> None:
     description = await tree.describe(nodes, pages, doc["name"])
     t3 = time.time()
 
-    emb = await llm.embed([f"{doc['name']}\n{description}"])
-    info.update(parser=parsed["parser"], seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1),
-                                                  "summary": round(t3 - t2, 1)},
+    where = doc.get("rel_path") or doc["name"]
+    emb = await llm.embed([f"{where}\n{description}"])
+    n_vec = await embed_nodes(doc, nodes, pages)
+    t4 = time.time()
+    info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec,
+                seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
+                         "embed": round(t4 - t3, 1)},
                 llm=used)
     store.update_document(doc_id, status="completed", tree=nodes, info=info, description=description,
                           embedding=emb[0] if emb else None)
-    log.info("indexed %s (%s, %d pages, %d nodes) in %.0fs", doc_id, doc["name"], len(pages), info["nodes"], t3 - t0)
+    log.info("indexed %s (%s, %d pages, %d nodes) in %.0fs", doc_id, doc["name"], len(pages), info["nodes"], t4 - t0)
+
+
+def _after_document(doc_id: str):
+    """Queue the collection's directory summaries once its last file is done."""
+    d = store.get_document(doc_id)
+    cid = d and d.get("collection_id")
+    if not cid or cid in _coll_pending:
+        return
+    counts = store.collection_status_counts(cid)
+    if not counts.get("queued") and not counts.get("processing"):
+        _coll_pending.add(cid)
+        _queue.put_nowait(cid)
 
 
 async def _worker(n: int):
     while True:
-        doc_id = await _queue.get()
+        job = await _queue.get()
         try:
-            await index_document(doc_id)
+            if job.startswith("pc-"):
+                _coll_pending.discard(job)
+                await collection.summarize(job)
+            else:
+                await index_document(job)
         except Exception as e:
-            log.error("index %s failed: %s", doc_id, traceback.format_exc())
-            store.update_document(doc_id, status="failed", error=repr(e)[:2000])
+            log.error("job %s failed: %s", job, traceback.format_exc())
+            if job.startswith("pc-"):
+                store.update_collection(job, status="failed", error=repr(e)[:2000])
+            else:
+                store.update_document(job, status="failed", error=repr(e)[:2000])
         finally:
+            if not job.startswith("pc-"):
+                try:
+                    _after_document(job)
+                except Exception:
+                    log.exception("collection bookkeeping for %s", job)
             _queue.task_done()
+
+
+async def _backfill_vectors():
+    """Documents indexed before node vectors existed get them now (cheap: embeddings only)."""
+    for doc_id in store.docs_without_vectors():
+        d = store.get_document(doc_id, full=True)
+        try:
+            n = await embed_nodes(d, d["tree"], store.get_pages(doc_id))
+        except Exception:
+            log.exception("vector backfill %s", doc_id)
+            continue
+        if n == 0:
+            return          # embedding service unavailable; try again on next start
+        log.info("backfilled %d node vectors for %s", n, d["name"])
 
 
 def start_workers():
     global _queue
     _queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
     for n in range(config.INDEX_WORKERS):
-        asyncio.get_running_loop().create_task(_worker(n))
+        loop.create_task(_worker(n))
     # resume jobs interrupted by a restart
     for status in ("queued", "processing"):
-        docs, _ = store.list_documents(limit=10000, status=status)
+        docs, _ = store.list_documents(limit=100000, status=status)
         for d in reversed(docs):
             _queue.put_nowait(d["id"])
+    for c in store.list_collections():
+        if c["status"] == "processing":
+            counts = store.collection_status_counts(c["id"])
+            if not counts.get("queued") and not counts.get("processing"):
+                _coll_pending.add(c["id"])
+                _queue.put_nowait(c["id"])
+    loop.create_task(_backfill_vectors())
 
 
-def enqueue(doc_id: str):
-    _queue.put_nowait(doc_id)
+def enqueue(job_id: str):
+    _queue.put_nowait(job_id)

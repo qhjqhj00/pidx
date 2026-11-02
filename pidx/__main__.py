@@ -1,9 +1,9 @@
 """CLI.
 
   python -m pidx serve [--port 8890]
-  python -m pidx index FILE.pdf [--mode auto|text|ocr]     (talks to a running server)
+  python -m pidx index FILE [--mode auto|text|ocr]   PDF / image / Office, or a .zip -> collection (talks to a running server)
   python -m pidx tree DOC_ID
-  python -m pidx ask "question" [--doc DOC_ID ...] [--no-answer]
+  python -m pidx ask "question" [--doc DOC_ID ...] [--collection PC_ID] [--retrieval hybrid|tree] [--no-answer]
 """
 
 import argparse
@@ -32,6 +32,8 @@ def main():
     s = sub.add_parser("ask")
     s.add_argument("query")
     s.add_argument("--doc", action="append")
+    s.add_argument("--collection")
+    s.add_argument("--retrieval", choices=["hybrid", "tree"])
     s.add_argument("--no-answer", action="store_true")
     a = ap.parse_args()
 
@@ -42,13 +44,21 @@ def main():
 
     http = httpx.Client(base_url=API, timeout=900, trust_env=False)
     if a.cmd == "index":
+        is_zip = a.file.lower().endswith(".zip")
         with open(a.file, "rb") as f:
-            r = http.post("/v1/documents", files={"file": (os.path.basename(a.file), f, "application/pdf")},
-                          data={"mode": a.mode}).json()
+            files = {"file": (os.path.basename(a.file), f, "application/octet-stream")}
+            r = (http.post("/v1/collections", files=files) if is_zip
+                 else http.post("/v1/documents", files=files, data={"mode": a.mode}))
+        if r.status_code >= 400:
+            print(r.text, file=sys.stderr)
+            return 1
+        r = r.json()
         print(json.dumps(r, ensure_ascii=False))
+        path = f"/v1/collections/{r['collection_id']}" if is_zip else f"/v1/documents/{r['doc_id']}"
         while not a.no_wait:
-            d = http.get(f"/v1/documents/{r['doc_id']}").json()
+            d = http.get(path).json()
             if d["status"] in ("completed", "failed"):
+                d.pop("tree", None)
                 print(json.dumps(d, ensure_ascii=False, indent=1))
                 break
             time.sleep(3)
@@ -61,14 +71,16 @@ def main():
                 show(n.get("nodes", []), d + 1)
         show(t.get("result", []))
     elif a.cmd == "ask":
-        r = http.post("/v1/search", json={"query": a.query, "doc_ids": a.doc, "answer": not a.no_answer,
+        r = http.post("/v1/search", json={"query": a.query, "doc_ids": a.doc, "collection_id": a.collection,
+                                          "retrieval": a.retrieval, "answer": not a.no_answer,
                                           "include_text": False}).json()
         if "answer" in r:
             print(r["answer"], "\n")
             for c in r["citations"]:
-                print(f"  [{c['tag']}] {c['doc_name']} p.{c['page']} bbox={c['bbox']}  {c['text'][:100]!r}")
+                print(f"  [{c['tag']}] {c['doc_name']} p.{c['page']}{' ' + c['page_label'] if c.get('page_label') else ''}"
+                      f" bbox={c['bbox']}  {c['text'][:100]!r}")
         print("\nnodes:", ", ".join(f"{n['node_id']} {n['title']} (p.{n['start_index']}-{n['end_index']})" for n in r["nodes"]))
-        print(f"{r['seconds']}s, llm {r['usage']}")
+        print(f"{r['seconds']}s, retrieval {r.get('retrieval')}, llm {r['usage']}")
 
 
 if __name__ == "__main__":

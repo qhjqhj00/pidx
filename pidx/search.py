@@ -1,8 +1,13 @@
-"""Reasoning-based retrieval over document trees (no chunking, no vector store).
+"""Reasoning-based retrieval over document trees, with node embeddings for recall.
 
-1. Pick documents: embedding prefilter (bge-m3, only for big libraries) + LLM over doc descriptions.
-2. Tree search: the LLM reads each tree's skeleton (titles, pages, summaries) and names the
-   nodes to read; trees too big for one prompt are explored level by level.
+1. Pick documents: rank by embedding similarity (doc description and best-matching node), then
+   the LLM reads a shortlist (descriptions, and the folder tree for documents from a zip collection).
+2. Tree search, two modes:
+   - hybrid (default): the tree is cut into anchor subtrees that each fit in one small prompt; node
+     vectors recall the best anchors, and the LLM reads those subtrees (titles, pages, summaries) in
+     parallel and names the nodes to read.
+   - tree: the LLM reads the whole skeleton at once; trees too big for one prompt are explored
+     level by level. Also the fallback when there are no vectors.
 3. Read: node text is assembled from layout blocks, each tagged with its block id.
 4. Optional answer with block-level citations; if the LLM says the evidence is
    insufficient, it describes what is missing and another tree-search round runs.
@@ -10,9 +15,10 @@
 
 import asyncio
 import json
-import math
 import re
 import time
+
+import numpy as np
 
 from . import config, llm, store, tree
 from .llm import approx_tokens, chat_json
@@ -47,31 +53,96 @@ def index_nodes(nodes):
 
 # --------------------------------------------------------------------------- doc selection
 
-def _cos(a, b):
-    num = sum(x * y for x, y in zip(a, b))
-    return num / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)) + 1e-9)
+def _unit(v):
+    v = np.asarray(v, dtype=np.float32)
+    return v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-9)
 
 
-async def select_docs(query, docs, max_docs=5):
-    if len(docs) <= 1:
-        return docs, ""
-    if len(docs) > 20:
-        qv = await llm.embed([query])
-        if qv:
-            docs = sorted(docs, key=lambda d: -_cos(qv[0], d["embedding"]) if d.get("embedding") else 0)[:20]
+_vec_cache: dict[str, tuple] = {}
+
+
+def node_vectors(doc) -> tuple[list[str], np.ndarray | None]:
+    """Unit-normalised node vectors of a document, cached until the document changes."""
+    key = doc.get("updated_at")
+    hit = _vec_cache.get(doc["id"])
+    if hit and hit[0] == key:
+        return hit[1], hit[2]
+    ids, m = store.load_node_vectors(doc["id"])
+    m = _unit(m) if m is not None else None
+    _vec_cache[doc["id"]] = (key, ids, m)
+    return ids, m
+
+
+def node_scores(doc, qvs) -> dict[str, float]:
+    """node_id -> best cosine similarity to any of the query vectors."""
+    ids, m = node_vectors(doc)
+    if m is None or not qvs:
+        return {}
+    sims = (m @ np.stack(qvs).T).max(axis=1)
+    return dict(zip(ids, sims.tolist()))
+
+
+def doc_score(doc, qv) -> float:
+    s = [max(node_scores(doc, [qv]).values(), default=0.0)]
+    if doc.get("embedding"):
+        s.append(float(_unit(doc["embedding"]) @ qv))
+    return max(s)
+
+
+def _doc_listing(docs) -> str:
+    """Shortlisted documents, standalone ones as a list and zip-collection ones under their folders."""
+    lines, colls = [], {}
+    for i, d in enumerate(docs):
+        if d.get("collection_id"):
+            colls.setdefault(d["collection_id"], []).append(i)
         else:
-            docs = docs[:20]
-    listing = "\n".join(f"[{i}] {d['name']} ({d['page_count']} pages): {d.get('description') or ''}"
-                        for i, d in enumerate(docs))
+            lines.append(f"[{i}] {d['name']} ({d['page_count']} pages): {d.get('description') or ''}")
+    for cid, idx in colls.items():
+        c = store.get_collection(cid)
+        if not c:
+            for i in idx:
+                lines.append(f"[{i}] {docs[i]['name']}: {docs[i].get('description') or ''}")
+            continue
+        want = {docs[i]["id"]: i for i in idx}
+        lines.append(f"Collection \"{c['name']}\" (folder tree; only matching files shown):")
+
+        def show(node, depth):
+            out = []
+            for ch in node["nodes"]:
+                if ch["type"] == "file":
+                    if ch["doc_id"] in want:
+                        d = docs[want[ch["doc_id"]]]
+                        out.append("  " * depth + f"[{want[ch['doc_id']]}] {ch['title']} ({d['page_count']} pages): "
+                                   f"{d.get('description') or ''}")
+                else:
+                    sub = show(ch, depth + 1)
+                    if sub:
+                        out.append("  " * depth + f"{ch['title']}/ — {ch.get('summary') or ''}")
+                        out.extend(sub)
+            return out
+
+        lines.extend(show(c["tree"], 1))
+    return "\n".join(lines)
+
+
+async def select_docs(query, docs, qv=None, max_docs=5):
+    """Returns (picked docs, thinking, shortlist [(doc, score)])."""
+    ranked = [(d, None) for d in docs]
+    if qv is not None:
+        ranked = sorted(((d, doc_score(d, qv)) for d in docs), key=lambda x: -x[1])
+    if len(docs) <= 1:
+        return docs, "", ranked
+    short = ranked[:config.DOC_SHORTLIST]
+    cand = [d for d, _ in short]
     js = await chat_json(f"""Question: {query}
 
 Documents in the library:
-{listing}
+{_doc_listing(cand)}
 
 Which documents should be searched to answer the question? Pick all that are needed (e.g. several for comparisons), at most {max_docs}, most relevant first.
 Return JSON {{"thinking": "...", "docs": [<index>, ...]}}""", max_tokens=1000, label="选文档")
-    picked = [docs[i] for i in js.get("docs", []) if isinstance(i, int) and 0 <= i < len(docs)]
-    return picked or docs[:max_docs], js.get("thinking", "")
+    picked = [cand[i] for i in js.get("docs", []) if isinstance(i, int) and 0 <= i < len(cand)]
+    return list({d["id"]: d for d in picked}.values()) or cand[:max_docs], js.get("thinking", ""), short
 
 
 # --------------------------------------------------------------------------- tree search
@@ -92,6 +163,7 @@ with at most {k} node ids in node_list, most relevant first."""
 
 
 async def tree_search(query, doc, k=5, exclude=(), extra=""):
+    """Pure reasoning over the whole skeleton (layered expansion for big trees)."""
     nodes = doc["tree"]
     by_id = index_nodes(nodes)
     full = "\n".join(render(nodes))
@@ -120,6 +192,124 @@ async def tree_search(query, doc, k=5, exclude=(), extra=""):
         how = {"mode": "layered", "expanded": sorted(expanded)}
     picked = [i for i in dict.fromkeys(map(str, picked)) if i in by_id and i not in exclude][:k]
     return thinking, drop_overlaps([by_id[i] for i in picked], doc), how
+
+
+# --------------------------------------------------------------------------- hybrid: anchors + vectors
+
+_anchor_cache: dict[str, tuple] = {}
+
+
+def anchors(doc) -> list[dict]:
+    """Cut the tree into anchor subtrees whose skeleton fits ANCHOR_TOKENS.
+
+    Consecutive small siblings are packed together; a node too big to fit becomes context (its
+    ancestors' lines are shown above every anchor) and its children are packed instead.
+    Anchor: {"path": [ancestor nodes], "roots": [sibling nodes], "ids": set of node ids inside}."""
+    key = doc.get("updated_at")
+    hit = _anchor_cache.get(doc["id"])
+    if hit and hit[0] == key:
+        return hit[1]
+    size = {}
+
+    def measure(n):
+        size[n["node_id"]] = approx_tokens(_node_line(n, 0)) + sum(measure(c) for c in n["nodes"])
+        return size[n["node_id"]]
+
+    for n in doc["tree"]:
+        measure(n)
+    budget = config.ANCHOR_TOKENS
+    out = []
+
+    def pack(siblings, path):
+        cur, tok = [], 0
+        for n in siblings:
+            t = size[n["node_id"]]
+            if t <= budget or not n["nodes"]:
+                if cur and tok + t > budget:
+                    out.append((path, cur))
+                    cur, tok = [], 0
+                cur.append(n)
+                tok += t
+            else:
+                if cur:
+                    out.append((path, cur))
+                    cur, tok = [], 0
+                pack(n["nodes"], path + [n])
+        if cur:
+            out.append((path, cur))
+
+    pack(doc["tree"], [])
+    res = [{"path": p, "roots": r, "ids": {m["node_id"] for x in r for m in tree.walk([x])}} for p, r in out]
+    _anchor_cache[doc["id"]] = (key, res)
+    return res
+
+
+def _anchor_label(a) -> str:
+    t = " > ".join(n["title"] for n in a["path"])
+    first, last = a["roots"][0]["title"], a["roots"][-1]["title"]
+    span = first if len(a["roots"]) == 1 else f"{first} … {last}"
+    return f"{t} > {span}" if t else span
+
+
+ANCHOR_PROMPT = """You are searching the tree index of the document "{name}" to answer a question.
+Document: {desc}
+Below is ONE PART of the document's tree (other parts are not shown). Each line is a node:
+[node_id] title (pages) — summary. Indentation shows nesting; the first lines are the ancestors of this part.
+
+Question: {query}
+{extra}
+Tree part:
+{tree}
+
+Find the nodes in this part whose text most likely contains the information needed. Prefer the most specific nodes.
+Rate how relevant this part is: 0 = nothing useful, 1 = maybe, 2 = likely, 3 = certainly contains the answer.
+Return JSON {{"thinking": "<short reason>", "relevance": <0-3>, "node_list": ["<node_id>", ...]}}
+with at most {k} node ids, most relevant first; empty node_list if relevance is 0."""
+
+
+async def hybrid_search(query, doc, qvs, k=5, exclude=(), extra="", skip_anchors=()):
+    """Recall anchor subtrees by node vectors, read them in parallel. Returns
+    (thinking, nodes, how, examined anchor indexes); nodes=None means no vectors for this doc."""
+    scores = node_scores(doc, qvs)
+    if not scores:
+        return None
+    by_id = index_nodes(doc["tree"])
+    al = anchors(doc)
+    anchor_score = [max((scores.get(n, -1.0) for n in a["ids"]), default=-1.0) for a in al]
+    fresh = [i for i in range(len(al)) if i not in skip_anchors] or list(range(len(al)))   # all read: re-read
+    ranked = sorted(((i, anchor_score[i]) for i in fresh), key=lambda x: -x[1])
+    chosen = ranked[:config.ANCHORS_PER_DOC]
+
+    async def read(i, score):
+        a = al[i]
+        lines = [_node_line(n, d) for d, n in enumerate(a["path"])]
+        for r in a["roots"]:
+            lines.extend(render([r], depth=len(a["path"])))
+        js = await chat_json(ANCHOR_PROMPT.format(name=doc["name"], desc=doc.get("description") or "", query=query,
+                                                  extra=extra, tree="\n".join(lines), k=k),
+                             max_tokens=800, label=f"树检索 · {doc['name']} · 子树 {_anchor_label(a)[:30]}")
+        allowed = a["ids"] | {n["node_id"] for n in a["path"]}
+        picked = [x for x in dict.fromkeys(map(str, js.get("node_list") or [])) if x in allowed and x not in exclude]
+        try:
+            rel = int(js.get("relevance", 1))
+        except (TypeError, ValueError):
+            rel = 1
+        return {"anchor": i, "label": _anchor_label(a), "score": round(score, 3), "relevance": rel,
+                "nodes": picked, "thinking": js.get("thinking", "")}
+
+    results = await asyncio.gather(*(read(i, sc) for i, sc in chosen))
+    flat = []
+    for rank, r in enumerate(results):
+        if r["relevance"] <= 0:
+            continue
+        for pos, nid in enumerate(r["nodes"]):
+            flat.append(((-r["relevance"], pos, rank), nid))
+    picked = [nid for _, nid in sorted(flat)]
+    picked = list(dict.fromkeys(picked))[:k]
+    thinking = "\n".join(f"〔{r['label']}｜相关度 {r['relevance']}〕{r['thinking']}" for r in results)
+    how = {"mode": "hybrid", "anchors_total": len(al),
+           "anchors": [{k2: r[k2] for k2 in ("label", "score", "relevance", "nodes")} for r in results]}
+    return thinking, drop_overlaps([by_id[i] for i in picked], doc), how, {i for i, _ in chosen}
 
 
 def _covers(a, b):
@@ -170,6 +360,8 @@ def node_blocks(doc_id, node, pages_cache):
 
 def bbox_k(b, page):
     """bbox in thousandths of page width/height, origin top-left (PageIndex convention)."""
+    if not b.get("bbox") or not page.get("width"):
+        return None
     x0, y0, x1, y1 = b["bbox"]
     w, h = page["width"], page["height"]
     return [round(x0 / w * 1000), round(y0 / h * 1000), round(x1 / w * 1000), round(y1 / h * 1000)]
@@ -177,11 +369,11 @@ def bbox_k(b, page):
 
 def _node_brief(d, n):
     return {"doc_id": d["id"], "doc_name": d["name"], "node_id": n["node_id"], "title": n["title"],
-            "start_index": n["start_index"], "end_index": n["end_index"]}
+            "start_index": n["start_index"], "end_index": n["end_index"], "rel_path": d.get("rel_path")}
 
 
 async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, include_text=True, emit=None,
-                 llm_backend=None):
+                 llm_backend=None, collection_id=None, retrieval=None):
     """See module docstring. `emit` (async callable) receives progress events for streaming UIs."""
     t0 = time.time()
     llm.backend.set(llm_backend or config.SEARCH_BACKEND)
@@ -189,41 +381,66 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
     tr = llm.Tracer(emit)
     llm.tracer.set(tr)
     phases = []          # (name, start, end) wall-clock spans
+    retrieval = retrieval or config.RETRIEVAL
 
     # any doc with a tree is searchable, including one being re-indexed (old tree until the new one lands)
     if doc_ids:
         docs = [store.get_document(i, full=True) for i in doc_ids]
     else:
-        docs, _ = store.list_documents(limit=10000, full=True)
+        docs, _ = store.list_documents(limit=100000, full=True, collection_id=collection_id)
     docs = [d for d in docs if d and d.get("tree")]
     if not docs:
         return {"query": query, "error": "no completed documents to search", "nodes": []}
-    await tr.event({"type": "start", "query": query, "llm": config.LLM_BACKENDS[llm.backend.get()]["label"], "library": [{"doc_id": d["id"], "name": d["name"]} for d in docs]})
+    await tr.event({"type": "start", "query": query, "llm": config.LLM_BACKENDS[llm.backend.get()]["label"],
+                    "retrieval": retrieval,
+                    "library": [{"doc_id": d["id"], "name": d["name"]} for d in docs]})
+
+    qv = None
+    if retrieval == "hybrid" or len(docs) > 1:
+        t = time.time()
+        v = await llm.embed([query])
+        qv = _unit(v[0]) if v else None
+        phases.append(("向量召回", t - t0, time.time() - t0))
+        await tr.event({"type": "embed", "ok": qv is not None, "ms": round((time.time() - t) * 1000)})
 
     t = time.time()
     n_lib = len(docs)
-    docs, why = await select_docs(query, docs)
+    docs, why, short = await select_docs(query, docs, qv)
     phases.append(("选文档", t - t0, time.time() - t0))
     await tr.event({"type": "docs", "skipped": n_lib <= 1, "thinking": why,
-                    "selected": [{"doc_id": d["id"], "name": d["name"], "description": d.get("description")} for d in docs]})
+                    "shortlist": [{"name": d.get("rel_path") or d["name"], "score": round(sc, 3) if sc is not None else None}
+                                  for d, sc in short[:10]] if n_lib > 1 else [],
+                    "selected": [{"doc_id": d["id"], "name": d["name"], "rel_path": d.get("rel_path"),
+                                  "description": d.get("description")} for d in docs]})
 
     pages = {d["id"]: {p["page"]: p for p in store.get_pages(d["id"])} for d in docs}
     hits = []          # (doc, node, thinking)
     reasoning = {}
     extra = ""
+    qvs = [qv] if qv is not None else []
+    examined = {}      # doc_id -> anchor indexes already read (hybrid)
     result = {}
     for rnd in range(max_rounds if answer else 1):
         seen = {(d["id"], n["node_id"]) for d, n, _ in hits}
 
         async def one(d):
-            th, nodes, how = await tree_search(query, d, top_k, exclude={nid for did, nid in seen if did == d["id"]},
-                                               extra=extra)
+            excl = {nid for did, nid in seen if did == d["id"]}
+            r = None
+            if retrieval == "hybrid" and qvs:
+                r = await hybrid_search(query, d, qvs, top_k, exclude=excl, extra=extra,
+                                        skip_anchors=examined.get(d["id"], set()))
+            if r is not None:
+                th, nodes, how, ex = r
+                examined.setdefault(d["id"], set()).update(ex)
+            else:
+                th, nodes, how = await tree_search(query, d, top_k, exclude=excl, extra=extra)
             await tr.event({"type": "tree_search", "round": rnd + 1, "doc_id": d["id"], "doc_name": d["name"],
                             "thinking": th, "how": how, "nodes": [_node_brief(d, n) for n in nodes]})
             return th, nodes
 
         t = time.time()
-        await tr.event({"type": "tree_search_start", "round": rnd + 1, "docs": [d["name"] for d in docs]})
+        await tr.event({"type": "tree_search_start", "round": rnd + 1, "docs": [d["name"] for d in docs],
+                        "mode": retrieval if qvs else "tree"})
         found = await asyncio.gather(*(one(d) for d in docs))
         phases.append((f"树检索 · 第 {rnd + 1} 轮", t - t0, time.time() - t0))
         new = 0
@@ -243,6 +460,10 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
         await tr.event({"type": "insufficient", "round": rnd + 1, "missing": result["missing"]})
         extra = ("Already read (not sufficient): " + "; ".join(n["title"] for _, n, _ in hits) +
                  f"\nStill missing: {result['missing']}\nPoint to OTHER nodes that may contain the missing information.")
+        if qvs:   # recall again around what is missing
+            v = await llm.embed([f"{query}\n{result['missing']}"])
+            if v:
+                qvs = [_unit(v[0])]
 
     out_nodes = []
     for d, n, _ in hits:
@@ -257,6 +478,7 @@ async def search(query: str, doc_ids=None, top_k=5, answer=False, max_rounds=2, 
         res.update(answer=result.get("answer", ""), citations=result.get("citations", []),
                    sufficient=result.get("sufficient", True))
     res["llm"] = llm.backend.get()
+    res["retrieval"] = retrieval if qv is not None else "tree"
     res["usage"] = used
     res["seconds"] = round(time.time() - t0, 1)
     res["timing"] = timing_summary(tr.calls, phases, res["seconds"])
@@ -307,7 +529,7 @@ async def _answer(query, docs, hits, pages, tr):
             tok += t
             n_blocks += 1
         used += tok
-        parts.append(f"=== Document {didx[d['id']]}: {d['name']} — section \"{n['title']}\" "
+        parts.append(f"=== Document {didx[d['id']]}: {d.get('rel_path') or d['name']} — section \"{n['title']}\" "
                      f"(pages {n['start_index']}-{n['end_index']})\n" + "\n".join(body))
     await tr.event({"type": "read", "nodes": [_node_brief(d, n) for d, n, _ in hits], "blocks": n_blocks,
                     "context_tokens": used, "sample": [f"[{k}] {v[3][:90]}" for k, v in list(block_map.items())[:3]]})
@@ -324,7 +546,9 @@ async def _answer(query, docs, hits, pages, tr):
             sent = limit
 
     await tr.event({"type": "answer_start"})
-    out = await llm.chat([{"role": "user", "content": ANSWER_PROMPT.format(query=query, context="\n\n".join(parts),
+    context = "\n\n".join(parts) or ("(No section of the searched documents looked relevant to the question. "
+                                       "Say that the documents do not contain this information.)")
+    out = await llm.chat([{"role": "user", "content": ANSWER_PROMPT.format(query=query, context=context,
                                                                           mark=STATUS_MARK)}],
                          max_tokens=4000, label="作答", on_delta=on_delta)
     ans, _, tail = out.partition(STATUS_MARK)
@@ -338,7 +562,8 @@ async def _answer(query, docs, hits, pages, tr):
         if tag in block_map:
             d, b, page, text = block_map[tag]
             cites.append({"tag": tag, "doc_id": d["id"], "doc_name": d["name"], "block_id": b["id"],
-                          "page": page["page"], "bbox": bbox_k(b, page), "text": text[:500]})
+                          "page": page["page"], "page_label": page.get("label"), "bbox": bbox_k(b, page),
+                          "text": text[:500]})
     res = {"answer": ans, "citations": cites, "sufficient": bool(status.get("sufficient", True)),
            "missing": status.get("missing", "")}
     await tr.event({"type": "answer_done", **res})

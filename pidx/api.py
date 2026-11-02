@@ -1,6 +1,6 @@
 """HTTP API.
 
-  POST   /v1/documents                     upload a PDF -> {doc_id}; indexing runs in the background
+  POST   /v1/documents                     upload a file (PDF / image / Office) -> {doc_id}; indexing runs in the background
   GET    /v1/documents                     list
   GET    /v1/documents/{id}                info + status
   DELETE /v1/documents/{id}
@@ -8,7 +8,10 @@
   GET    /v1/documents/{id}/tree           ?node_summary=&include_text=
   GET    /v1/documents/{id}/pages          ?pages=5-7,9
   GET    /v1/documents/{id}/blocks/{bid}   one layout block with bbox
-  GET    /v1/documents/{id}/file           the PDF
+  GET    /v1/documents/{id}/file           the original file
+  POST   /v1/collections                   upload a zip -> {collection_id, doc_ids}; one document per supported file
+  GET    /v1/collections[/{id}]            list / folder tree with per-file status
+  DELETE /v1/collections/{id}              the collection and all its documents
   GET    /v1/documents/{id}/pages/{n}/image?highlight=p3_b1,p3_b4
   POST   /v1/search                        {query, doc_ids?, top_k?, answer?, max_rounds?, include_text?}
   POST   /v1/search/stream                 same body, Server-Sent Events (progress + answer deltas + result)
@@ -18,7 +21,9 @@ import asyncio
 import hmac
 import json
 import logging
+import mimetypes
 import shutil
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,7 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, indexer, search as searchmod, store, tree
+from . import collection, config, indexer, parse, search as searchmod, store, tree
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -80,7 +85,8 @@ def _doc_or_404(doc_id, full=False):
 def _public(d):
     return {"id": d["id"], "name": d["name"], "status": d["status"], "error": d.get("error"),
             "pageNum": d.get("page_count"), "description": d.get("description"), "metadata": d.get("metadata"),
-            "createdAt": d.get("created_at"), "info": d.get("info")}
+            "createdAt": d.get("created_at"), "info": d.get("info"), "format": d.get("format"),
+            "pageImages": bool(d.get("pdf_path")), "collectionId": d.get("collection_id"), "relPath": d.get("rel_path")}
 
 
 def parse_pages(spec: str) -> list[int]:
@@ -98,30 +104,108 @@ def parse_pages(spec: str) -> list[int]:
 @app.post("/v1/documents")
 async def submit_document(file: UploadFile = File(...), mode: str = Form("auto"), summary: bool = Form(True),
                           metadata: str = Form("{}")):
-    if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(400, "only PDF is supported")
-    name = Path(file.filename).name
-    stem, n = name[:-4], 1
+    fname = Path(file.filename or "").name
+    ext = Path(fname).suffix.lower()
+    if ext == ".zip":
+        raise HTTPException(400, "zip files go to POST /v1/collections")
+    fmt = parse.file_format(fname)
+    if not fmt:
+        raise HTTPException(400, f"unsupported file type {ext or '(none)'}; supported: "
+                                 + " ".join(sorted(config.SUPPORTED_EXTS)) + " (and .zip via /v1/collections)")
+    name, stem, n = fname, fname[:-len(ext)], 1
     while store.find_by_name(name):
-        name = f"{stem}_{n}.pdf"
+        name = f"{stem}_{n}{ext}"
         n += 1
     doc_id = store.new_doc_id()
-    path = config.FILES_DIR / f"{doc_id}.pdf"
+    path = config.FILES_DIR / f"{doc_id}{ext}"
     with path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
+    pdf_path = None
     try:
-        pymupdf.open(path).close()
-    except Exception:
+        parse.check_file(str(path), fmt)
+        if fmt == "image":
+            pdf_path = str(config.FILES_DIR / f"{doc_id}.pdf")
+            parse.image_to_pdf(str(path), pdf_path)
+    except Exception as e:
         path.unlink(missing_ok=True)
-        raise HTTPException(400, "not a readable PDF")
-    store.create_document(doc_id, name, str(path), json.loads(metadata or "{}"), {"mode": mode, "summary": summary})
+        raise HTTPException(400, str(e))
+    store.create_document(doc_id, name, str(path), json.loads(metadata or "{}"), {"mode": mode, "summary": summary},
+                          format=fmt, pdf_path=pdf_path or (str(path) if fmt == "pdf" else None))
     indexer.enqueue(doc_id)
-    return {"doc_id": doc_id, "name": name, "status": "queued"}
+    return {"doc_id": doc_id, "name": name, "format": fmt, "status": "queued"}
+
+
+@app.post("/v1/collections")
+async def submit_collection(file: UploadFile = File(...), summary: bool = Form(True)):
+    fname = Path(file.filename or "upload.zip").name
+    if not fname.lower().endswith(".zip"):
+        raise HTTPException(400, "upload a .zip file")
+    with tempfile.NamedTemporaryFile(suffix=".zip", dir=config.DATA_DIR, delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+    try:
+        cid, doc_ids, info = await asyncio.to_thread(collection.ingest_zip, tmp.name, fname[:-4],
+                                                     {"mode": "auto", "summary": summary})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    for d in doc_ids:
+        indexer.enqueue(d)
+    return {"collection_id": cid, "doc_ids": doc_ids, "files": info["files"], "skipped": info["skipped"],
+            "status": "processing"}
+
+
+def _coll_public(c, with_tree=False):
+    counts = store.collection_status_counts(c["id"])
+    o = {"id": c["id"], "name": c["name"], "status": c["status"], "error": c.get("error"), "info": c.get("info"),
+         "counts": counts, "createdAt": c.get("created_at")}
+    if with_tree:
+        docs = {d["id"]: d for d in store.list_documents(limit=100000, collection_id=c["id"])[0]}
+
+        def conv(n):
+            if n["type"] == "file":
+                d = docs.get(n["doc_id"]) or {}
+                return {**n, "status": d.get("status"), "pageNum": d.get("page_count"), "format": d.get("format"),
+                        "description": d.get("description")}
+            return {**n, "nodes": [conv(x) for x in n["nodes"]]}
+
+        o["tree"] = conv(c["tree"])
+    return o
+
+
+@app.get("/v1/collections")
+def list_collections():
+    return {"collections": [_coll_public(c) for c in store.list_collections()]}
+
+
+@app.get("/v1/collections/{cid}")
+def get_collection(cid: str):
+    c = store.get_collection(cid)
+    if not c:
+        raise HTTPException(404, f"collection {cid} not found")
+    return _coll_public(c, with_tree=True)
+
+
+@app.delete("/v1/collections/{cid}")
+def delete_collection(cid: str):
+    if not store.get_collection(cid):
+        raise HTTPException(404, f"collection {cid} not found")
+    for d in store.list_documents(limit=100000, collection_id=cid)[0]:
+        _delete_files(d)
+        store.delete_document(d["id"])
+    store.delete_collection(cid)
+    return {"message": "Collection deleted successfully."}
+
+
+def _delete_files(d):
+    for p in {d["path"], d.get("pdf_path")}:
+        if p:
+            Path(p).unlink(missing_ok=True)
 
 
 @app.get("/v1/documents")
-def list_documents(limit: int = Query(50, ge=1, le=10000), offset: int = 0):
-    docs, total = store.list_documents(limit, offset)
+def list_documents(limit: int = Query(50, ge=1, le=10000), offset: int = 0, collection_id: str | None = None):
+    docs, total = store.list_documents(limit, offset, collection_id=collection_id)
     return {"documents": [_public(d) for d in docs], "total": total, "limit": limit, "offset": offset}
 
 
@@ -134,7 +218,7 @@ def get_document(doc_id: str):
 def delete_document(doc_id: str):
     d = _doc_or_404(doc_id)
     store.delete_document(doc_id)
-    Path(d["path"]).unlink(missing_ok=True)
+    _delete_files(d)
     return {"message": "Document deleted successfully."}
 
 
@@ -175,7 +259,7 @@ def get_tree(doc_id: str, node_summary: bool = False, include_text: bool = False
 @app.get("/v1/documents/{doc_id}/pages")
 def get_page_content(doc_id: str, pages: str = Query(..., description='e.g. "5-7" or "3,8"')):
     _doc_or_404(doc_id)
-    return {"doc_id": doc_id, "pages": [{"page_index": p["page"], "markdown": p["text"]}
+    return {"doc_id": doc_id, "pages": [{"page_index": p["page"], "label": p.get("label"), "markdown": p["text"]}
                                         for p in store.get_pages(doc_id, parse_pages(pages))]}
 
 
@@ -197,13 +281,16 @@ def get_block(doc_id: str, block_id: str):
 @app.get("/v1/documents/{doc_id}/file")
 def get_file(doc_id: str):
     d = _doc_or_404(doc_id)
-    return FileResponse(d["path"], media_type="application/pdf", filename=d["name"])
+    return FileResponse(d["path"], media_type=mimetypes.guess_type(d["name"])[0] or "application/octet-stream",
+                        filename=d["name"], content_disposition_type="inline")
 
 
 @app.get("/v1/documents/{doc_id}/pages/{page}/image")
 def page_image(doc_id: str, page: int, highlight: str = "", zoom: float = 1.5):
     d = _doc_or_404(doc_id)
-    pdf = pymupdf.open(d["path"])
+    if not d.get("pdf_path"):
+        raise HTTPException(404, f"no page images for {d['format']} documents")
+    pdf = pymupdf.open(d["pdf_path"])
     if not 1 <= page <= pdf.page_count:
         raise HTTPException(404, "page out of range")
     pg = pdf[page - 1]
@@ -226,9 +313,13 @@ class SearchReq(BaseModel):
     max_rounds: int = 2
     include_text: bool = True
     llm: str | None = None      # backend name, see GET /v1/llm; default PIDX_SEARCH_BACKEND
+    collection_id: str | None = None   # search only the files of one zip collection
+    retrieval: str | None = None       # "hybrid" (vectors recall subtrees) | "tree" (pure LLM); default PIDX_RETRIEVAL
 
 
-def _check_llm(name):
+def _check_llm(name, retrieval=None):
+    if retrieval and retrieval not in ("hybrid", "tree"):
+        raise HTTPException(400, "retrieval must be 'hybrid' or 'tree'")
     if name and name not in config.LLM_BACKENDS:
         raise HTTPException(400, f"unknown llm backend {name!r}; available: {list(config.LLM_BACKENDS)}")
 
@@ -241,9 +332,9 @@ def llm_backends():
 
 @app.post("/v1/search")
 async def search(req: SearchReq):
-    _check_llm(req.llm)
+    _check_llm(req.llm, req.retrieval)
     return await searchmod.search(req.query, req.doc_ids, req.top_k, req.answer, req.max_rounds, req.include_text,
-                                  llm_backend=req.llm)
+                                  llm_backend=req.llm, collection_id=req.collection_id, retrieval=req.retrieval)
 
 
 app.mount("/static", StaticFiles(directory=WEB), name="static")
@@ -252,7 +343,7 @@ app.mount("/static", StaticFiles(directory=WEB), name="static")
 @app.post("/v1/search/stream")
 async def search_stream(req: SearchReq):
     """Same as /v1/search, as Server-Sent Events: progress events, answer deltas, then {"type": "done", "result"}."""
-    _check_llm(req.llm)
+    _check_llm(req.llm, req.retrieval)
     q: asyncio.Queue = asyncio.Queue()
 
     async def emit(ev):
@@ -261,7 +352,8 @@ async def search_stream(req: SearchReq):
     async def run():
         try:
             res = await searchmod.search(req.query, req.doc_ids, req.top_k, req.answer, req.max_rounds,
-                                         req.include_text, emit=emit, llm_backend=req.llm)
+                                         req.include_text, emit=emit, llm_backend=req.llm,
+                                         collection_id=req.collection_id, retrieval=req.retrieval)
             await q.put({"type": "done", "result": res})
         except Exception as e:
             logging.exception("search failed")

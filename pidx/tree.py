@@ -349,8 +349,11 @@ async def build_tree(parsed) -> tuple[list, dict]:
         flat = await select_headings(cands, body, hint=toc_hint(pages, lines)) if cands else []
         info["method"] = "layout+llm"
         if len(flat) < 2:
+            one = flat     # a short file (one sheet, one image) may honestly have a single heading
             flat = await from_pages_llm(pages, lines_by_page, 1, len(pages))
             info["method"] = "llm-pages"
+            if len(flat) < len(one):
+                flat, info["method"] = one, "layout+llm"
     if not flat:   # no structure at all: one node per page group
         flat = [{"title": f"Pages {p}-{min(p + config.MAX_PAGES_PER_NODE - 1, len(pages))}", "level": 1, "start": (p, 0)}
                 for p in range(1, len(pages) + 1, config.MAX_PAGES_PER_NODE)]
