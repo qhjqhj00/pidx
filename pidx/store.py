@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS collections (
 CREATE TABLE IF NOT EXISTS node_vectors (
   doc_id TEXT NOT NULL, node_id TEXT NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (doc_id, node_id)
 );
+CREATE TABLE IF NOT EXISTS page_vectors (
+  doc_id TEXT NOT NULL, page INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (doc_id, page)
+);
 """
 
 # columns added after the first release: (table, column, type)
@@ -150,6 +153,7 @@ def delete_document(doc_id):
     with db() as con:
         con.execute("DELETE FROM pages WHERE doc_id=?", (doc_id,))
         con.execute("DELETE FROM node_vectors WHERE doc_id=?", (doc_id,))
+        con.execute("DELETE FROM page_vectors WHERE doc_id=?", (doc_id,))
         n = con.execute("DELETE FROM documents WHERE id=?", (doc_id,)).rowcount
     return n > 0
 
@@ -222,3 +226,26 @@ def docs_without_vectors() -> list[str]:
     return [r[0] for r in db().execute(
         "SELECT id FROM documents WHERE status='completed' AND tree IS NOT NULL AND id NOT IN "
         "(SELECT DISTINCT doc_id FROM node_vectors)")]
+
+
+# --------------------------------------------------------------------------- page vectors (page search)
+
+def save_page_vectors(doc_id, items):
+    """items: [(page, vector)]; replaces the document's page vectors."""
+    with db() as con:
+        con.execute("DELETE FROM page_vectors WHERE doc_id=?", (doc_id,))
+        con.executemany("INSERT INTO page_vectors VALUES (?,?,?)",
+                        [(doc_id, p, np.asarray(v, dtype=np.float32).tobytes()) for p, v in items])
+
+
+def load_page_vectors(doc_id) -> tuple[list[int], np.ndarray | None]:
+    rows = db().execute("SELECT page, vec FROM page_vectors WHERE doc_id=? ORDER BY page", (doc_id,)).fetchall()
+    if not rows:
+        return [], None
+    return [r[0] for r in rows], np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
+
+
+def docs_without_page_vectors() -> list[str]:
+    return [r[0] for r in db().execute(
+        "SELECT id FROM documents WHERE status='completed' AND tree IS NOT NULL AND id NOT IN "
+        "(SELECT DISTINCT doc_id FROM page_vectors)")]

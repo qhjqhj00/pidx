@@ -24,6 +24,12 @@ def _get(path, **params):
     return r.json()
 
 
+def _post(path, body) -> str:
+    r = http.post(path, json=body)
+    r.raise_for_status()
+    return json.dumps(r.json(), ensure_ascii=False)
+
+
 @mcp.tool()
 def list_documents(collection_id: str | None = None) -> str:
     """List indexed documents (PDF, images, Office files): id, name, format, status, page count, description,
@@ -56,6 +62,13 @@ def get_tree(doc_id: str, node_summary: bool = True) -> str:
 def get_pages(doc_id: str, pages: str) -> str:
     """Text of specific pages, e.g. pages="5-7" or "3,8"."""
     return json.dumps(_get(f"/v1/documents/{doc_id}/pages", pages=pages), ensure_ascii=False)
+
+
+@mcp.tool()
+def search_pages(query: str, doc_ids: list[str] | None = None, collection_id: str | None = None, top_k: int = 10) -> str:
+    """Fast page ranking by embeddings (no LLM): returns the pages most likely to answer `query`, each with
+    a score, its title path and a snippet. Read them next with get_pages(doc_id, "N,M")."""
+    return _post("/v1/pages/search", {"query": query, "doc_ids": doc_ids, "collection_id": collection_id, "top_k": top_k})
 
 
 @mcp.tool()

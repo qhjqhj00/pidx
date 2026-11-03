@@ -118,6 +118,18 @@ label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px}
 .txtpage{white-space:pre-wrap;font-size:13px;line-height:1.6;border:1px solid var(--line);border-radius:4px;padding:10px 12px;max-height:70vh;overflow:auto;background:var(--bg)}
 .txtpage mark{background:var(--hl);color:inherit;border-radius:2px}
 select.sm{font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px}
+button.ghost{background:var(--accent-soft);color:var(--accent)}
+.ps-head{font-size:12.5px;color:var(--muted);margin:4px 0 8px;line-height:1.6}
+.ps{display:grid;grid-template-columns:22px 64px 1fr;gap:10px;align-items:start;padding:8px 6px;border-bottom:1px solid var(--line);cursor:pointer;border-radius:6px}
+.ps:hover{background:var(--accent-soft)}
+.ps .rk{font:600 12px ui-monospace,monospace;color:var(--muted);padding-top:2px;text-align:right}
+.ps .th{width:64px;height:84px;border:1px solid var(--line);border-radius:3px;background:var(--bg);object-fit:cover;object-position:top;display:flex;align-items:center;justify-content:center;font:10.5px ui-monospace,monospace;color:var(--muted);text-transform:uppercase}
+.ps .nm{font-size:13px;font-weight:600;word-break:break-all}
+.ps .tp{font-size:12px;color:var(--muted);margin:1px 0 3px}
+.ps .sn{font-size:12px;line-height:1.5;color:var(--ink);opacity:.85;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ps .sc{display:flex;align-items:center;gap:6px;margin-top:4px;font:11px ui-monospace,monospace;color:var(--muted)}
+.ps .sc .bar{width:90px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}
+.ps .sc .bar i{display:block;height:100%;background:var(--accent)}
 .modal .quote{font-size:12.5px;color:var(--muted);border-left:3px solid #f2a33a;padding:2px 8px;margin:6px 0 10px}
 
 /* ---- zip processing view ---- */
@@ -203,6 +215,7 @@ select.sm{font-size:12px;background:var(--bg);color:var(--ink);border:1px solid 
       <label><input type="checkbox" id="ans" checked> 生成答案</label>
       <label>模型 <select id="llm" class="sm"></select></label>
       <span style="flex:1"></span>
+      <button id="pgo" class="ghost" title="只用 bge-m3 向量给页面打分，不调 LLM，约 0.2 秒">页面检索</button>
       <button id="go">检索</button>
     </div>
     <div class="sugg" id="sugg"></div>
@@ -787,6 +800,40 @@ document.addEventListener("mousemove", e => {
   const w = tip.offsetWidth;
   tip.style.left = Math.min(e.clientX + 12, innerWidth - w - 8) + "px"; tip.style.top = (e.clientY + 14) + "px";
 });
+
+// ---------------------------------------------------------------- page search (embeddings only)
+async function pageSearch() {
+  const q = $("#query").value.trim();
+  if (!q) return;
+  const scope = $("#scope").value;
+  if (scope === "doc" && !cur) { alert("先选一个文档，或把范围改成“全库”"); return; }
+  if (scope === "coll" && !curColl) { alert("先选一个资料包（zip），或把范围改成“全库”"); return; }
+  $("#pgo").disabled = true;
+  $("#out").innerHTML = '<div class="spin">向量化问题、给页面打分…</div>';
+  const t0 = performance.now();
+  try {
+    const r = await api("v1/pages/search", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({query: q, doc_ids: scope === "doc" ? [cur] : null, collection_id: scope === "coll" ? curColl : null, top_k: 10})});
+    const rtt = Math.round(performance.now() - t0), tm = r.timing_ms, hits = r.results[0].pages;
+    const max = Math.max(...hits.map(h => h.score), 1e-6);
+    $("#out").innerHTML = `<div class="ps-head"><b>页面检索</b>（只用向量，不调 LLM）：在 ${r.documents} 份文档的 ${r.pages_searched} 页里排序，
+      服务端 ${tm.total} ms（问题向量化 ${tm.embed} ms · 打分 ${tm.score} ms），往返 ${rtt} ms。
+      分数 = 0.7 × 页向量相似度 + 0.3 × 所在章节节点的相似度。点一行看原页。
+      ${r.documents_without_page_vectors.length ? `<br>⚠ ${r.documents_without_page_vectors.length} 份文档还没有页向量（后台补算中）` : ""}</div>` +
+      hits.map((h, i) => `<div class="ps" data-doc="${h.doc_id}" data-page="${h.page}">
+        <div class="rk">${i + 1}</div>
+        ${h.image ? `<img class="th" loading="lazy" src="${h.image}?zoom=0.35" alt="">` : `<div class="th">${esc((h.doc_name.split(".").pop() || "").slice(0, 5))}</div>`}
+        <div><div class="nm">${esc(h.rel_path || h.doc_name)} · ${esc(h.label || "p." + h.page)}</div>
+        <div class="tp">${esc(h.title_path.join(" › "))}</div>
+        <div class="sn">${esc(h.snippet)}</div>
+        <div class="sc"><span class="bar"><i style="width:${(h.score / max * 100).toFixed(0)}%"></i></span>${h.score.toFixed(3)}
+          <span>页 ${h.page_score.toFixed(3)} · 节点 ${h.node_score.toFixed(3)}</span></div></div></div>`).join("");
+    document.querySelectorAll(".ps").forEach(el => el.onclick = () => showPage(el.dataset.doc, +el.dataset.page, []));
+  } catch (e) {
+    $("#out").innerHTML = `<div class="empty">出错：${esc(String(e.message || e))}</div>`;
+  } finally { $("#pgo").disabled = false; }
+}
+$("#pgo").onclick = pageSearch;
 loadDocs();
 </script>
 </body>

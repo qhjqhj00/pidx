@@ -4,7 +4,7 @@
 
 支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx）、Markdown / 纯文本（md / markdown / txt，本地解析，不经过 MinerU），以及带目录层级的 **zip 资料包**（目录成为树的上层节点）。
 
-思路来自 [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex)（MIT），接口形状也和它对齐（`submit / get_tree / get_page_content / get_block`），另外加了 `search`。实现是独立写的，建树、扫描件 OCR、检索流程都不同，见下面的[工作原理](#工作原理)。
+思路来自 [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex)（MIT），接口形状也和它对齐（`submit / get_tree / get_page_content / get_block`），另外加了 `search`。实现是独立写的，建树、扫描件 OCR、检索流程都不同，见下面的[工作原理](#工作原理)。两者的能力差异见 [docs/vs-pageindex.md](docs/vs-pageindex.md)。
 
 ![演示页：左边文档，中间树索引（命中节点高亮），右边是检索过程的实时时间线、带引用的答案和延迟瀑布图](docs/demo.png)
 
@@ -94,6 +94,7 @@ for f in samples/*.pdf; do .venv/bin/python -m pidx index "$f" --no-wait; done
 | 接口 | 说明 |
 |---|---|
 | `POST /v1/documents` | 上传文件（PDF / 图片 / Office / Markdown；multipart：`file`，可选 `mode`、`summary`、`metadata`），返回 `doc_id`，后台建索引 |
+| `POST /v1/pages/search` | 页面检索：只用向量给页面打分（不调 LLM，约 0.2 秒），返回带分数的页面排名、章节路径和片段；`query` 可以是 1–10 个问题，范围用 `doc_ids` / `collection_id`，可按 `metadata` 精确匹配过滤 |
 | `POST /v1/collections` | 上传 zip，返回 `collection_id` 和各文件的 `doc_id`；`GET /v1/collections[/{id}]` 看目录树和进度，`GET /v1/collections/{id}/progress` 看每个文件的阶段时间线，`DELETE` 删除 |
 | `GET /v1/documents[/{id}]` | 列表 / 状态（`queued → processing → completed / failed`），`info` 里有建树方式、耗时、LLM 用量 |
 | `POST /v1/documents/{id}/reindex` | 重建索引，期间旧树仍可检索 |
@@ -217,7 +218,7 @@ data/               运行时数据（SQLite + 上传的 PDF），已被 git 忽
 - **看不了图**：图表里的数字只有出现在图注或 OCR 文本里才能用上，需要接一个视觉模型。
 - **Office 文件没有原页高亮**：MinerU 不返回 Office 的版面坐标，引用打开的是解析出的文本；页码是虚拟页。
 - **zip 不支持嵌套**：zip 里的 zip 会被跳过。
-- **没有系统评测**：目前只人工核对了 13 道演示问题。下一步用 10-K 问答集和向量 RAG、开源 PageIndex 做对比。
+- **没有系统评测**：目前只人工核对了 13 道演示问题。下一步用 10-K 问答集和向量 RAG、开源 PageIndex 做对比。和 PageIndex 的能力对比见 [docs/vs-pageindex.md](docs/vs-pageindex.md)。
 - **可以省 token**：树检索提示词里问题放在整棵树前面，导致 DeepSeek 的前缀缓存用不上。把树挪到前面，同一文档的多次提问就能命中缓存。
 - **字体信息坏掉的 PDF**（比如老的 TeX 文档）只能走「LLM 读页」，层级偶尔会放错。
 - **单进程**：任务队列在进程内，SQLite 单文件，适合演示和小规模使用。

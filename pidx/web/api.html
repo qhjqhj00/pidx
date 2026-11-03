@@ -28,6 +28,7 @@
   <a class="sub" href="#image">页图 / 原文件</a>
   <a href="#search">检索</a>
   <a class="sub" href="#stream">流式检索</a>
+  <a class="sub" href="#pagesearch">页面检索</a>
   <a href="#errors">错误</a>
   <a href="#mcp">MCP / CLI</a>
   <a href="#config">配置</a>
@@ -268,6 +269,24 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <div class="note">答案里的引用标签是 <code>[文档序号:block_id]</code>，文档序号对应 <code>documents</code> 数组的下标加 1。前端可以把标签替换成可点击的链接，指向 <code>/pages/{page}/image?highlight={block_id}</code>。</div>
 <p>库里没有可搜的文档时返回 <code>{"query", "error": "no completed documents to search", "nodes": []}</code>。</p>
 
+<div class="ep" id="pagesearch"><span class="m post">POST</span><h3>/v1/pages/search</h3></div>
+<p>页面检索：只用向量给页面打分，<b>不调 LLM</b>，服务端约 0.2 秒。适合 agent 先找到该读哪几页，再用 <a href="#pages"><code>GET /v1/documents/{doc_id}/pages</code></a> 取原文。每页有一个 bge-m3 向量（内容是「文件路径 · 页标签 / 所在章节路径 / 页文本」），页面得分 = 0.7 × 页向量相似度 + 0.3 × 覆盖这一页的章节节点的相似度。</p>
+<table>
+  <tr><th>字段</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>query</code></td><td>必填</td><td>一个问题，或 1–10 个问题的数组（一次请求只向量化一次）</td></tr>
+  <tr><td><code>doc_ids</code> / <code>collection_id</code></td><td>全库</td><td>检索范围</td></tr>
+  <tr><td><code>top_k</code></td><td><code>10</code></td><td>每个问题返回几页，1–50</td></tr>
+  <tr><td><code>metadata</code></td><td>—</td><td>按上传时的文档 metadata 精确匹配过滤，如 <code>{"ticker": "DIS"}</code></td></tr>
+</table>
+<pre><code>{"results": [{"query": "…", "pages": [
+   {"doc_id": "pi-…", "doc_name": "论文表3_….png", "rel_path": "05_截图/论文表3_….png", "format": "image",
+    "page": 1, "label": null, "score": 0.647, "page_score": 0.645, "node_score": 0.653,
+    "title_path": ["Pages 1-1"], "snippet": "Table 3. At scale, good views beat …",
+    "image": "v1/documents/pi-…/pages/1/image"}, …]}],
+ "retrieval": "embedding", "documents": 32, "pages_searched": 629, "documents_without_page_vectors": [],
+ "timing_ms": {"load": 36, "embed": 105, "score": 5, "fetch": 7, "total": 171}}</code></pre>
+<p class="muted">分数是余弦相似度，只在同一次检索内可比，不是校准过的概率。<code>image</code> 只有 PDF 和图片有。没有页向量的文档（例如向量服务不可用时建的索引）会列在 <code>documents_without_page_vectors</code> 里，服务启动时自动补算。</p>
+
 <h2 id="errors">错误</h2>
 <table>
   <tr><th>HTTP</th><th>情况</th></tr>
@@ -279,7 +298,7 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <p class="muted">调用 LLM 时遇到 429/502/503/504 会自动退避重试（优先遵守 Retry-After），最多 6 次。</p>
 
 <h2 id="mcp">MCP / CLI</h2>
-<p><b>MCP</b>（stdio）：内部调用上面的 HTTP 接口，提供 <code>list_documents</code>、<code>list_collections</code>、<code>get_collection</code>、<code>get_tree</code>、<code>get_pages</code>、<code>search</code> 六个工具。</p>
+<p><b>MCP</b>（stdio）：内部调用上面的 HTTP 接口，提供 <code>list_documents</code>、<code>list_collections</code>、<code>get_collection</code>、<code>get_tree</code>、<code>get_pages</code>、<code>search_pages</code>、<code>search</code> 七个工具。</p>
 <pre><code>claude mcp add pidx -e PIDX_API=http://127.0.0.1:8890 -- \
   /path/to/pidx/.venv/bin/python -m pidx.mcp_server</code></pre>
 <p><b>CLI</b>：</p>

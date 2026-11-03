@@ -48,6 +48,45 @@ async def embed_nodes(doc: dict, nodes: list, pages=None) -> int:
     return len(vecs)
 
 
+def page_nodes(nodes) -> dict[int, tuple[str, list[str]]]:
+    """page -> (node_id, title path) of the node that best describes it: the narrowest page range
+    covering it, then the deepest, then the first. (A one-page Markdown file has many nodes on page 1;
+    its root heading, not its last section, describes the page.)"""
+    best = {}
+
+    def visit(ns, path):
+        for n in ns:
+            p = path + [n["title"]]
+            key = (n["end_index"] - n["start_index"], -len(p))
+            for pg in range(n["start_index"], n["end_index"] + 1):
+                if pg not in best or key < best[pg][0]:
+                    best[pg] = (key, n["node_id"], p)
+            visit(n["nodes"], p)
+
+    visit(nodes, [])
+    return {pg: (nid, p) for pg, (_, nid, p) in best.items()}
+
+
+def page_embed_text(doc: dict, page: dict, path: list[str]) -> str:
+    where = doc.get("rel_path") or doc["name"]
+    head = page.get("label") or f"p.{page['page']}"
+    return f"{where} · {head}\n{' > '.join(path)}\n{(page.get('text') or '')[:3000]}".strip()
+
+
+async def embed_pages(doc: dict, nodes: list, pages: list) -> int:
+    """One bge-m3 vector per page, for page search. Returns the count (0 if the service is off)."""
+    paths = page_nodes(nodes)
+    items = [(p["page"], page_embed_text(doc, p, paths.get(p["page"], (None, []))[1])) for p in pages]
+    vecs = []
+    for i in range(0, len(items), 32):
+        v = await llm.embed([t for _, t in items[i:i + 32]])
+        if v is None:
+            return 0
+        vecs.extend(v)
+    store.save_page_vectors(doc["id"], [(pg, v) for (pg, _), v in zip(items, vecs)])
+    return len(vecs)
+
+
 async def index_document(doc_id: str) -> None:
     doc = store.get_document(doc_id)
     opts = doc["options"] or {}
@@ -76,8 +115,9 @@ async def index_document(doc_id: str) -> None:
     where = doc.get("rel_path") or doc["name"]
     emb = await llm.embed([f"{where}\n{description}"])
     n_vec = await embed_nodes(doc, nodes, pages)
+    n_pvec = await embed_pages(doc, nodes, pages)
     t4 = time.time()
-    info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec,
+    info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec, page_vectors=n_pvec,
                 seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
                          "embed": round(t4 - t3, 1)},
                 llm=used, stages=progress.end(doc_id))
@@ -137,6 +177,16 @@ async def _backfill_vectors():
         if n == 0:
             return          # embedding service unavailable; try again on next start
         log.info("backfilled %d node vectors for %s", n, d["name"])
+    for doc_id in store.docs_without_page_vectors():
+        d = store.get_document(doc_id, full=True)
+        try:
+            n = await embed_pages(d, d["tree"], store.get_pages(doc_id))
+        except Exception:
+            log.exception("page vector backfill %s", doc_id)
+            continue
+        if n == 0:
+            return
+        log.info("backfilled %d page vectors for %s", n, d["name"])
 
 
 def start_workers():

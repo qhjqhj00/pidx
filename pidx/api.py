@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import collection, config, indexer, parse, progress, search as searchmod, store, tree
+from . import collection, config, indexer, pagesearch, parse, progress, search as searchmod, store, tree
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -337,6 +337,29 @@ def page_image(doc_id: str, page: int, highlight: str = "", zoom: float = 1.5):
                     pg.draw_rect(r, color=(0.95, 0.55, 0), fill=(1, 0.85, 0.2), fill_opacity=0.25, width=1.5)
     png = pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
     return Response(png, media_type="image/png", headers={"Cache-Control": "max-age=300"})
+
+
+class PageSearchReq(BaseModel):
+    query: str | list[str]                 # one question, or up to 10
+    doc_ids: list[str] | None = None
+    collection_id: str | None = None
+    top_k: int = 10
+    metadata: dict | None = None           # exact-match filter on document metadata
+
+
+@app.post("/v1/pages/search")
+async def page_search(req: PageSearchReq):
+    """Rank pages by embeddings only (no LLM): ~0.3 s, returns scored pages to read next."""
+    qs = [req.query] if isinstance(req.query, str) else req.query
+    qs = [q.strip() for q in qs if q and q.strip()]
+    if not qs or len(qs) > 10:
+        raise HTTPException(400, "give 1 to 10 non-empty questions")
+    if not 1 <= req.top_k <= 50:
+        raise HTTPException(400, "top_k must be 1..50")
+    r = await pagesearch.page_search(qs, req.doc_ids, req.collection_id, req.top_k, req.metadata)
+    if r.get("error"):
+        raise HTTPException(503 if "unavailable" in r["error"] else 404, r["error"])
+    return r
 
 
 class SearchReq(BaseModel):

@@ -19,7 +19,7 @@
   <a class="sub" href="#tree">② 建树</a>
   <a class="sub" href="#refine">③ 拆分超长节点</a>
   <a class="sub" href="#summary">④ 摘要与描述</a>
-  <a class="sub" href="#vectors">⑤ 节点向量</a>
+  <a class="sub" href="#vectors">⑤ 节点和页向量</a>
   <a class="sub" href="#zip">zip 资料包</a>
   <a href="#search">检索</a>
   <a class="sub" href="#s-docs">① 选文档</a>
@@ -163,8 +163,9 @@
   <li>所有节点并发处理（默认并发 24）。</li>
 </ul>
 
-<h3 id="vectors">⑤ 节点向量</h3>
+<h3 id="vectors">⑤ 节点和页向量</h3>
 <p>每个节点算一个 bge-m3 向量（SiliconFlow），内容是「文件路径 + 标题路径 + 摘要」，例如 <code>02_财务/2025年度预算.xlsx · 电站清单：……</code>。文档描述也算一个。一份 200 页的文档约 100 个节点，几秒钟、几乎不花钱。向量服务不可用时跳过，检索自动退回纯 LLM 读树；之前索引的文档在服务启动时自动补算向量。</p>
+<p>每一页也算一个向量，内容是「文件路径 · 页标签 / 所在章节路径 / 页文本」，给页面检索（<code>POST /v1/pages/search</code>）用：页面得分 = 0.7 × 页向量相似度 + 0.3 × 覆盖这一页的章节节点的相似度，全程不调 LLM，全库 600 多页约 0.2 秒。</p>
 
 <h3 id="zip">zip 资料包</h3>
 <p><code>POST /v1/collections</code> 上传 zip。目录结构变成一棵<b>目录树</b>，每个支持格式的文件是一个普通文档：单独建索引，有自己的页、树和引用。全部文件索引完后，由下往上给每个目录写 1–2 句摘要（依据子目录摘要和文件描述）。</p>
@@ -219,14 +220,16 @@
 </table>
 
 <h2 id="vs">与 PageIndex 的对照</h2>
+<p>完整的能力对比、性能数字和差距清单见仓库里的 <a href="https://github.com/qhjqhj00/pidx/blob/main/docs/vs-pageindex.md">docs/vs-pageindex.md</a>（2026-11-03 整理；还没有全面评测，性能只能看量级）。要点：</p>
 <table>
   <tr><th></th><th>PageIndex</th><th>pidx</th></tr>
-  <tr><td>树生成</td><td>Flash：纯版面规则，不用 LLM（开源）；LLM 只做摘要和修树</td><td>书签 → 版面候选交给 LLM 定结构（锚定到真实的行）→ LLM 读页并校验；超长节点递归拆分</td></tr>
-  <tr><td>扫描件 / 图片</td><td>云版有 OCR 和图像理解</td><td>用 MinerU 做 OCR；图像只能用到图注（Atria 看不了图）</td></tr>
-  <tr><td>引用</td><td>云版到块级（bbox）</td><td>块级（bbox，千分比坐标，和 PageIndex 一致）</td></tr>
-  <tr><td>检索</td><td>agent 在树上搜索</td><td>节点向量召回子树，LLM 并行读子树选节点（也可以读整棵树），证据不足自动补搜</td></tr>
-  <tr><td>输入</td><td>PDF、Markdown</td><td>PDF、图片、Word / PPT / Excel（含老格式），zip 资料包（目录成树）</td></tr>
-  <tr><td>接口</td><td>submit / get_tree / get_page_content / get_block / chat</td><td>同样形状的 REST 接口 + <code>/v1/search</code> + MCP</td></tr>
+  <tr><td>建树</td><td>开源 Flash：版面规则，不用 LLM；也有 LLM 方式</td><td>书签 → 版面候选交 LLM 定结构 → LLM 读页；超长节点递归拆分</td></tr>
+  <tr><td>输入</td><td>开源：文本型 PDF、Markdown；Cloud：扫描件、图片多的文档</td><td>PDF、图片、Word / PPT / Excel、Markdown / txt，zip 资料包（目录成树）</td></tr>
+  <tr><td>图像理解</td><td>Cloud 保存图片，agent 取图交给视觉模型</td><td>没有，只有 OCR 文字和图注</td></tr>
+  <tr><td>引用</td><td>开源页级；Cloud 块级（bbox）</td><td>块级（bbox）；Office / Markdown 只能标文本</td></tr>
+  <tr><td>检索</td><td>agent 在树上逐步搜索；Page Search API 约 1 秒返回页面排名</td><td>向量召回子树 + LLM 并行读子树，证据不足自动补搜；<code>/v1/pages/search</code> 只用向量给页面打分，约 0.2 秒</td></tr>
+  <tr><td>元数据 / 文件夹</td><td>带类型的元数据字段和比较过滤；API 建文件夹</td><td>只有精确匹配过滤（页面检索）；资料包只能上传 zip 建</td></tr>
+  <tr><td>接口</td><td>Python / JS SDK，远程 MCP，多轮 chat</td><td>REST、CLI、本地 stdio MCP；单轮检索</td></tr>
 </table>
 
 <h2 id="limits">已知局限</h2>
