@@ -358,9 +358,19 @@ def mineru_cloud(path: str, page_count: int | None = None, timeout=3600) -> list
     log.info("MinerU batch %s: uploaded %d part(s)", batch_id, len(parts))
 
     deadline = time.time() + timeout
+    errors = 0
     while True:
-        r = http.get(f"{config.MINERU_API}/extract-results/batch/{batch_id}", headers=auth)
-        r.raise_for_status()
+        try:            # a poll can fail transiently (403 / 429 / 5xx / timeout); only a run of failures counts
+            r = http.get(f"{config.MINERU_API}/extract-results/batch/{batch_id}", headers=auth)
+            r.raise_for_status()
+            errors = 0
+        except httpx.HTTPError as e:
+            errors += 1
+            log.warning("MinerU poll %s failed (%d in a row): %r", batch_id, errors, e)
+            if errors >= 5 or time.time() > deadline:
+                raise
+            time.sleep(5 * errors)
+            continue
         results = {x.get("data_id") or stem(x["file_name"]): x for x in r.json()["data"]["extract_result"]}
         states = [results.get(stem(n), {}).get("state", "waiting-file") for n, _, _ in parts]
         prog = [results.get(stem(n), {}).get("extract_progress") or {} for n, _, _ in parts]
