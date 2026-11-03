@@ -135,6 +135,7 @@
   <tr><td>扫描件</td><td>平均每页不到 80 个字符就判为扫描件，转交 mineru.net 的云端 MinerU（OCR + 版面分析）；单文件上限 200 页，超出的在本地切段后分别上传，结果再按页码拼回。MinerU 的 <code>content_list</code> 会带出标题层级、表格（HTML）、图片和图表的说明文字，坐标从 0–1000 换算回 PDF 坐标。也可以用 <code>mode=ocr</code> 强制走这条路。</td></tr>
   <tr><td>图片<br><span class="muted">png jpg jpeg jp2 webp gif bmp</span></td><td>上传时用 Pillow 包成单页 PDF（gif 取第一帧，150 dpi），之后完全按扫描件处理：MinerU OCR，引用能在原图上画框。</td></tr>
   <tr><td>Office<br><span class="muted">doc docx ppt pptx xls xlsx</span></td><td>原文件直接交给 MinerU 解析，不转 PDF。MinerU 对 Office 不给坐标：Word 整篇是一页，PPT 一张幻灯片一页，Excel 一个工作表一页；Word 的标题样式会给出标题层级，表格是 HTML。pidx 把它们切成<b>虚拟页</b>：每页约 1500 token，尽量在标题前断开；表格转成 markdown，超长的表按行拆开并重复表头。Markdown / txt 走同一条路，但在本地解析，不经过 MinerU：<code>#</code> 标题给出层级，管道表格保留为表格。PPT / Excel 的页带标签（「幻灯片 3」「工作表 2 · 电站清单」）。之后建树、摘要、检索都和 PDF 一样，只是没有页图，引用打开的是解析出的文本。</td></tr>
+  <tr><td>图像理解<br><span class="muted">图片、PDF 里的图</span></td><td>解析之后、建树之前，视觉模型（默认 DeepInfra 上的 <code>Qwen/Qwen3.5-35B-A3B</code>）看每张图：先抄下图里的文字和数字（标题、坐标轴、图例、表格单元），再用几句话描述它画的是什么、有什么趋势。图片文件看整张图；PDF 看位图块，以及路径足够多的矢量图区域（图表、示意图；表格框线不算），面积至少占页面 3%，每份文档最多 30 张，按面积从大到小。识别结果作为 <code>figure</code> 类型的版面块插在图在阅读顺序里的位置，带图的坐标框，所以建树、摘要、向量、作答都能用上，引用时能在原页上框出这张图。没配 key 时跳过。一张图约 10 秒、约 $0.0005，并发 8。</td></tr>
 </table>
 
 <h3 id="tree">② 建树 <span class="muted" style="font-size:13px">pidx/tree.py</span></h3>
@@ -225,7 +226,7 @@
   <tr><th></th><th>PageIndex</th><th>pidx</th></tr>
   <tr><td>建树</td><td>开源 Flash：版面规则，不用 LLM；也有 LLM 方式</td><td>书签 → 版面候选交 LLM 定结构 → LLM 读页；超长节点递归拆分</td></tr>
   <tr><td>输入</td><td>开源：文本型 PDF、Markdown；Cloud：扫描件、图片多的文档</td><td>PDF、图片、Word / PPT / Excel、Markdown / txt，zip 资料包（目录成树）</td></tr>
-  <tr><td>图像理解</td><td>Cloud 保存图片，agent 取图交给视觉模型</td><td>没有，只有 OCR 文字和图注</td></tr>
+  <tr><td>图像理解</td><td>Cloud 保存图片，agent 检索时取图交给视觉模型</td><td>建索引时视觉模型识别图片和图表，结果成为带坐标的版面块；检索时不再看图</td></tr>
   <tr><td>引用</td><td>开源页级；Cloud 块级（bbox）</td><td>块级（bbox）；Office / Markdown 只能标文本</td></tr>
   <tr><td>检索</td><td>agent 在树上逐步搜索；Page Search API 约 1 秒返回页面排名</td><td>向量召回子树 + LLM 并行读子树，证据不足自动补搜；<code>/v1/pages/search</code> 只用向量给页面打分，约 0.2 秒</td></tr>
   <tr><td>元数据 / 文件夹</td><td>带类型的元数据字段和比较过滤；API 建文件夹</td><td>只有精确匹配过滤（页面检索）；资料包只能上传 zip 建</td></tr>
@@ -234,7 +235,7 @@
 
 <h2 id="limits">已知局限</h2>
 <ul>
-  <li><b>看不了图</b>：图表里的数字只有出现在图注或 OCR 文本里时才能用上。要真正理解图表，需要接一个视觉模型（DeepInfra 上的 Qwen3-VL，或者把自建 gemma 开成多模态）。</li>
+  <li><b>图只在建索引时看一次</b>：视觉模型的识别结果是固定的文字，检索时不会带着问题回头再看图；识别漏掉的细节就答不出来。Office 文件里的图还没有识别。</li>
   <li><b>OCR 额度</b>：云端 MinerU 每天有 1000 页高优先级额度，大批量扫描件超出后会排队变慢。</li>
   <li><b>字体信息坏掉的 PDF</b>只能走策略 3，层级偶尔会放错（four-lectures.pdf 的第 3 章就有这个问题）。</li>
   <li><b>延迟</b>：检索用 DeepSeek 时，13 道推荐问题平均 3.6 秒（hybrid）/ 4.0 秒（tree），hybrid 平均输入 token 约为 tree 的一半；用 Atria 时平均 37 秒。大部分时间花在逐 token 生成上，详见演示页每次问答最后的瀑布图。</li>

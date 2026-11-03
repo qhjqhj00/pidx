@@ -207,6 +207,7 @@ def collection_progress(cid: str):
                       "status": d["status"], "error": d.get("error"), "queued_at": d.get("created_at"),
                       "pages": d.get("page_count"), "nodes": i.get("nodes"), "vectors": i.get("node_vectors"),
                       "parser": i.get("parser"), "method": i.get("method"), "seconds": i.get("seconds"),
+                      "vision": i.get("vision"),
                       "llm": (live or {}).get("llm") or i.get("llm"),
                       "stages": (live or {}).get("stages") or i.get("stages") or [],
                       "stage": (live or {}).get("stage"), "detail": (live or {}).get("detail")})

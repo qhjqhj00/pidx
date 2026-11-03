@@ -69,6 +69,7 @@ for f in samples/*.pdf; do .venv/bin/python -m pidx index "$f" --no-wait; done
 | `PIDX_LLM_BASE_URL` / `PIDX_LLM_API_KEY` / `PIDX_LLM_MODEL` | 同上，换成任意 OpenAI 兼容端点（设置后优先于 `ATRIA_*`） | 和上一行二选一 | 不在 tailnet 内就用这个，比如直接填 DeepSeek（见下一行）。注意费用：一份 200 页的文档建索引大约 100 多次调用、20 万输入 token |
 | `DEEPSEEK_API_KEY` | 检索 / 问答（选文档、树检索、作答），比 Atria 快约 10 倍 | 推荐 | 在 <https://platform.deepseek.com> 注册 → 左侧「API keys」→ 创建 → 充值后可用（按 token 计费）。团队成员也可以用共享 key：`hub_vault env deepseek` |
 | `SILICON_FLOW_API_KEY` | 向量（`BAAI/bge-m3`）：建索引时给每个节点和文档描述算向量；检索时给文档排序、召回子树 | 推荐。不填就跳过向量，检索退回纯 LLM 读树（大树会慢一些、贵一些） | 在 <https://cloud.siliconflow.cn> 注册 → 「账户管理 → API 密钥」→ 新建。新用户有赠送额度，价格以官网为准。接口文档：<https://api-docs.siliconflow.cn/docs/api/embeddings-post> |
+| `DEEPINFRA_API_KEY` | 图像理解：建索引时让视觉模型（默认 `Qwen/Qwen3.5-35B-A3B`）识别图片和 PDF 里的图表，结果写成带坐标的版面块 | 可选，不填则跳过图像理解；`PIDX_VISION=off` 也能关掉。模型用 `PIDX_VISION_MODEL` 换，其他 OpenAI 兼容端点用 `PIDX_VISION_URL` / `PIDX_VISION_API_KEY` | <https://deepinfra.com> 注册后在 Dashboard → API Keys 创建。一张图约 $0.0005 |
 | `MINERU_API_KEY` | 扫描件 / 纯图片 PDF、图片的 OCR 和版面分析，Word / PPT / Excel 的解析（mineru.net 云端 API） | 可选，不填则扫描件、图片、Office 文件无法索引，文本型 PDF 不受影响 | 在 <https://mineru.net> 注册登录 → 「API 管理」<https://mineru.net/apiManage> → 创建 API Token（注意页面上显示的有效期，过期要重新生成）。每天 1000 页高优先级额度，单个文件最多 200 页（超出的 pidx 会自动切段）。也可以不用云端，自建 MinerU 后设置 `PIDX_MINERU_URL` |
 | `PIDX_PUBLIC_TOKEN` | 经反代挂到公网时的访问 token | 只在公网部署时需要 | 自己生成：`python3 -c "import secrets; print(secrets.token_urlsafe(18))"` |
 
@@ -215,7 +216,7 @@ data/               运行时数据（SQLite + 上传的 PDF），已被 git 忽
 
 ## 已知局限与 TODO
 
-- **看不了图**：图表里的数字只有出现在图注或 OCR 文本里才能用上，需要接一个视觉模型。
+- **图只在建索引时看一次**：视觉模型的识别结果是固定的文字，检索时不会带着问题回头看图；Office 文件里的图还没有识别。
 - **Office 文件没有原页高亮**：MinerU 不返回 Office 的版面坐标，引用打开的是解析出的文本；页码是虚拟页。
 - **zip 不支持嵌套**：zip 里的 zip 会被跳过。
 - **没有系统评测**：目前只人工核对了 13 道演示问题。下一步用 10-K 问答集和向量 RAG、开源 PageIndex 做对比。和 PageIndex 的能力对比见 [docs/vs-pageindex.md](docs/vs-pageindex.md)。

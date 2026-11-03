@@ -70,6 +70,17 @@ MINERU_API = os.environ.get("PIDX_MINERU_API", "https://mineru.net/api/v4")
 MINERU_MODEL = os.environ.get("PIDX_MINERU_MODEL", "pipeline")      # pipeline | vlm
 MINERU_URL = os.environ.get("PIDX_MINERU_URL", "")
 
+# Image understanding: a vision model describes images and figures at index time; the description becomes
+# a layout block (with the figure's bbox) that the tree, summaries, vectors and answers all read.
+# OpenAI-compatible; DeepInfra by default. Off when no key is set or PIDX_VISION=off.
+VISION_URL = os.environ.get("PIDX_VISION_URL", os.environ.get("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"))
+VISION_API_KEY = os.environ.get("PIDX_VISION_API_KEY", os.environ.get("DEEPINFRA_API_KEY", ""))
+VISION_MODEL = os.environ.get("PIDX_VISION_MODEL", "Qwen/Qwen3.5-35B-A3B")
+VISION = os.environ.get("PIDX_VISION", "auto") != "off" and bool(VISION_API_KEY)
+VISION_MAX_PER_DOC = _int("PIDX_VISION_MAX_PER_DOC", 30)       # largest figures first
+VISION_MIN_AREA = float(os.environ.get("PIDX_VISION_MIN_AREA", "0.03"))  # fraction of the page
+VISION_CONCURRENCY = _int("PIDX_VISION_CONCURRENCY", 8)
+
 # Input formats. PDFs and images get page images and bbox highlighting; Office files are parsed by
 # MinerU natively (no layout coordinates) and cut into "virtual pages" of about this many tokens.
 PDF_EXTS = {".pdf"}

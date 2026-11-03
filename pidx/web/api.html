@@ -321,6 +321,7 @@ python -m pidx ask "问题" [--doc pi-xxx ...] [--collection pc-xxx] [--retrieva
   <tr><td><code>PIDX_RETRIEVAL</code></td><td><code>hybrid</code></td><td>默认召回方式：<code>hybrid</code> 或 <code>tree</code>（请求里的 <code>retrieval</code> 优先）。</td></tr>
   <tr><td><code>PIDX_ANCHOR_TOKENS</code> / <code>PIDX_ANCHORS_PER_DOC</code></td><td>3000 / 3</td><td>hybrid：每棵子树骨架的大小上限；每篇文档并行读几棵子树。</td></tr>
   <tr><td><code>PIDX_DOC_SHORTLIST</code></td><td>30</td><td>选文档时交给 LLM 的候选文档数（按向量排序）。</td></tr>
+  <tr><td><code>DEEPINFRA_API_KEY</code> / <code>PIDX_VISION_MODEL</code></td><td>— / <code>Qwen/Qwen3.5-35B-A3B</code></td><td>图像理解：建索引时识别图片和 PDF 里的图表，结果成为 <code>figure</code> 类型的版面块（带坐标框）。没有 key 或 <code>PIDX_VISION=off</code> 时跳过。<code>PIDX_VISION_MAX_PER_DOC</code>（30）、<code>PIDX_VISION_MIN_AREA</code>（0.03，占页面比例）、<code>PIDX_VISION_CONCURRENCY</code>（8）。</td></tr>
   <tr><td><code>PIDX_VIRTUAL_PAGE_TOKENS</code></td><td>1500</td><td>Office 文件的虚拟页大小。</td></tr>
   <tr><td><code>PIDX_ZIP_MAX_FILES</code> / <code>_FILE_MB</code> / <code>_TOTAL_MB</code></td><td>1000 / 200 / 2048</td><td>zip 资料包的上限。</td></tr>
   <tr><td><code>MINERU_API_KEY</code> / <code>PIDX_MINERU_MODEL</code></td><td>— / <code>pipeline</code></td><td>扫描件、图片 OCR 和 Office 文件解析（mineru.net 云端 API，PDF 单文件最多 200 页，超出的会自动切段）。<code>PIDX_MINERU_MODEL</code> 可选 <code>pipeline</code> 或 <code>vlm</code>。</td></tr>

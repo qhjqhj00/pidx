@@ -9,7 +9,7 @@ import logging
 import time
 import traceback
 
-from . import collection, config, llm, parse, progress, store, tree
+from . import collection, config, llm, parse, progress, store, tree, vision
 
 log = logging.getLogger("pidx.indexer")
 
@@ -98,8 +98,10 @@ async def index_document(doc_id: str) -> None:
     parsed = await asyncio.to_thread(parse.parse_file, doc["path"], doc["format"], opts.get("mode", "auto"),
                                      doc.get("pdf_path"))
     pages = parsed["pages"]
-    store.save_pages(doc_id, pages)
     store.update_document(doc_id, page_count=len(pages))
+    tv = time.time()
+    vis = await vision.enrich(doc, parsed)      # figure descriptions become blocks before the tree is built
+    store.save_pages(doc_id, pages)
     t1 = time.time()
 
     progress.stage("tree", {"pages": len(pages)})
@@ -118,7 +120,8 @@ async def index_document(doc_id: str) -> None:
     n_pvec = await embed_pages(doc, nodes, pages)
     t4 = time.time()
     info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec, page_vectors=n_pvec,
-                seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
+                vision=vis or None,
+                seconds={"parse": round(tv - t0, 1), "vision": round(t1 - tv, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
                          "embed": round(t4 - t3, 1)},
                 llm=used, stages=progress.end(doc_id))
     store.update_document(doc_id, status="completed", tree=nodes, info=info, description=description,
