@@ -17,6 +17,9 @@ Office and text files are skipped (no page images).
 import asyncio
 import base64
 import logging
+import time
+
+import httpx
 
 import pymupdf
 
@@ -33,29 +36,46 @@ MARK = "[图像识别] "
 _sem: asyncio.Semaphore | None = None
 
 
+_busy_until: dict[str, float] = {}     # model -> time before which it is skipped (it said "busy")
+RETRIES = (2, 6, 15)                   # seconds to wait before retrying the same model
+
+
 async def describe(png: bytes, what: str, page: int, doc_name: str) -> tuple[str | None, dict]:
+    """Ask the vision model, retrying 429 / 5xx / timeouts with backoff; when a model stays busy, move
+    on to the next one in VISION_FALLBACKS (and skip it for a minute for the following figures)."""
     global _sem
     _sem = _sem or asyncio.Semaphore(config.VISION_CONCURRENCY)
     _, client = llm._get()
-    body = {"model": config.VISION_MODEL, "max_tokens": 1200, "temperature": 0,
-            "messages": [{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
-                {"type": "text", "text": PROMPT.format(what=what, page=page, doc=doc_name)}]}]}
-    if "qwen3" in config.VISION_MODEL.lower():
-        body["chat_template_kwargs"] = {"enable_thinking": False}
-    async with _sem:
-        try:
-            r = await client.post(f"{config.VISION_URL}/chat/completions", json=body, timeout=180,
-                                  headers={"Authorization": f"Bearer {config.VISION_API_KEY}"})
-            r.raise_for_status()
-            j = r.json()
-        except Exception as e:
-            log.warning("vision call failed (%s p.%d): %r", doc_name, page, e)
-            return None, {}
-    text = (j["choices"][0]["message"].get("content") or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`").removeprefix("markdown").strip()
-    return text or None, j.get("usage") or {}
+    content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
+               {"type": "text", "text": PROMPT.format(what=what, page=page, doc=doc_name)}]
+    models = [config.VISION_MODEL] + [m for m in config.VISION_FALLBACKS if m != config.VISION_MODEL]
+    fresh = [m for m in models if _busy_until.get(m, 0) < time.time()]
+    for model in fresh or models:
+        body = {"model": model, "max_tokens": 1200, "temperature": 0, "messages": [{"role": "user", "content": content}]}
+        if "qwen3.5" in model.lower() or "qwen3.6" in model.lower():
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        for attempt, wait in enumerate((0,) + RETRIES):
+            if wait:
+                await asyncio.sleep(wait)
+            async with _sem:
+                try:
+                    r = await client.post(f"{config.VISION_URL}/chat/completions", json=body, timeout=120,
+                                          headers={"Authorization": f"Bearer {config.VISION_API_KEY}"})
+                except httpx.TimeoutException as e:
+                    err, retry = e, True
+                else:
+                    if r.status_code == 200:
+                        j = r.json()
+                        text = (j["choices"][0]["message"].get("content") or "").strip()
+                        if text.startswith("```"):
+                            text = text.strip("`").removeprefix("markdown").strip()
+                        return text or None, {**(j.get("usage") or {}), "model": model}
+                    err, retry = f"HTTP {r.status_code} {r.text[:120]}", r.status_code == 429 or r.status_code >= 500
+            if not retry:
+                break
+        log.warning("vision %s failed (%s p.%d): %s", model, doc_name, page, err)
+        _busy_until[model] = time.time() + 60
+    return None, {}
 
 
 def _regions(pdf: pymupdf.Document, pages: list[dict], whole: bool) -> list[tuple[int, pymupdf.Rect, int | None]]:
@@ -159,15 +179,17 @@ async def enrich(doc: dict, parsed: dict) -> dict:
 
     results = await asyncio.gather(*(one(pno, rect) for pno, rect, _ in regions))
     by_page = {p["page"]: p for p in pages}
-    added, tokens = 0, 0
+    added, tokens, used = 0, 0, set()
     # insert from the bottom of each page upward so earlier offsets stay valid
     order = sorted(zip(regions, results), key=lambda x: (x[0][0], -_insert_at(by_page[x[0][0]], x[0][1], x[0][2])))
     for (pno, rect, bidx), (text, usage) in order:
         tokens += usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        if usage.get("model"):
+            used.add(usage["model"])
         if not text:
             continue
         page = by_page[pno]
         _insert(page, parsed["lines"], _insert_at(page, rect, bidx), MARK + text, rect, bidx)
         added += 1
     log.info("vision %s: %d/%d figures described", doc["name"], added, len(regions))
-    return {"figures": len(regions), "described": added, "tokens": tokens, "model": config.VISION_MODEL}
+    return {"figures": len(regions), "described": added, "tokens": tokens, "model": ", ".join(sorted(used)) or None}

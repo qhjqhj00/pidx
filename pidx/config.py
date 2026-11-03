@@ -76,6 +76,8 @@ MINERU_URL = os.environ.get("PIDX_MINERU_URL", "")
 VISION_URL = os.environ.get("PIDX_VISION_URL", os.environ.get("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"))
 VISION_API_KEY = os.environ.get("PIDX_VISION_API_KEY", os.environ.get("DEEPINFRA_API_KEY", ""))
 VISION_MODEL = os.environ.get("PIDX_VISION_MODEL", "Qwen/Qwen3.5-35B-A3B")
+# tried in order when the model above is overloaded (429 "Model busy") or keeps failing; comma-separated
+VISION_FALLBACKS = [m for m in os.environ.get("PIDX_VISION_FALLBACKS", "Qwen/Qwen3-VL-30B-A3B-Instruct").split(",") if m.strip()]
 VISION = os.environ.get("PIDX_VISION", "auto") != "off" and bool(VISION_API_KEY)
 VISION_MAX_PER_DOC = _int("PIDX_VISION_MAX_PER_DOC", 30)       # largest figures first
 VISION_MIN_AREA = float(os.environ.get("PIDX_VISION_MIN_AREA", "0.03"))  # fraction of the page
