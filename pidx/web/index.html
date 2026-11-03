@@ -119,16 +119,75 @@ label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px}
 .txtpage mark{background:var(--hl);color:inherit;border-radius:2px}
 select.sm{font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px}
 .modal .quote{font-size:12.5px;color:var(--muted);border-left:3px solid #f2a33a;padding:2px 8px;margin:6px 0 10px}
+
+/* ---- zip processing view ---- */
+:root{--c-parse:#2a78d6;--c-mineru:#eb6834;--c-tree:#1baf7a;--c-summary:#eda100;--c-embed:#e87ba4;--c-dirs:#6250d6}
+@media (prefers-color-scheme: dark){:root{--c-parse:#3987e5;--c-mineru:#d95926;--c-tree:#199e70;--c-summary:#c98500;--c-embed:#d55181;--c-dirs:#9085e9}}
+.modal .pane.wide{max-width:1120px;padding:16px 18px 18px}
+.pv-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.pv-head .t{font-size:16px;font-weight:700}
+.pill{font-size:11.5px;font-weight:600;border-radius:999px;padding:1px 9px;border:1px solid currentColor}
+.pv-head .x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
+.steps{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:0;margin:4px 0 16px;counter-reset:st}
+.stp{position:relative;text-align:center;padding:0 4px}
+.stp::before{content:"";position:absolute;top:13px;left:-50%;right:50%;height:2px;background:var(--line)}
+.stp:first-child::before{display:none}
+.stp.done::before,.stp.run::before{background:var(--accent)}
+.stp .dot{position:relative;z-index:1;width:28px;height:28px;margin:0 auto 6px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 12px ui-monospace,monospace;background:var(--panel);border:2px solid var(--line);color:var(--muted)}
+.stp.done .dot{background:var(--accent);border-color:var(--accent);color:#fff}
+.stp.run .dot{border-color:var(--accent);color:var(--accent)}
+.stp.run .dot::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:2px solid var(--accent);opacity:.5;animation:ring 1.4s ease-out infinite}
+.stp.bad .dot{background:var(--bad);border-color:var(--bad);color:#fff}
+@keyframes ring{from{transform:scale(.8);opacity:.6}to{transform:scale(1.25);opacity:0}}
+.stp .nm{font-size:12.5px;font-weight:600}
+.stp .sb{font-size:11px;color:var(--muted);min-height:16px;font-variant-numeric:tabular-nums}
+.stp .bar{height:3px;border-radius:2px;background:var(--line);margin:4px 10px 0;overflow:hidden}
+.stp .bar i{display:block;height:100%;background:var(--accent);transition:width .6s}
+.stp .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:0}
+.tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:16px}
+.tile{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
+.tile .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.3}
+.tile .v small{font-size:12px;color:var(--muted);font-weight:500}
+.tile .k{font-size:11.5px;color:var(--muted)}
+.gantt{--lab:minmax(120px,230px);--st:170px}
+.g-row,.g-axis{display:grid;grid-template-columns:var(--lab) 1fr var(--st);gap:10px;align-items:center}
+.g-row{min-height:26px;border-radius:4px;padding:0 4px}
+.g-row:hover{background:var(--accent-soft)}
+.g-row.clk{cursor:pointer}
+.g-lab{display:flex;align-items:center;gap:4px;font-size:12.5px;min-width:0}
+.g-lab .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.g-dir{font-size:11.5px;color:var(--muted);padding:8px 4px 2px;font-weight:600}
+.g-track{position:relative;height:16px}
+.g-track::before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line)}
+.g-seg{position:absolute;top:1px;height:14px;border-radius:3px;transition:left .5s linear,width .5s linear}
+.g-seg.s-wait{background:repeating-linear-gradient(135deg,var(--line) 0 3px,transparent 3px 6px);top:4px;height:8px}
+.s-parse{background:var(--c-parse)}.s-mineru{background:var(--c-mineru)}.s-tree{background:var(--c-tree)}.s-summary{background:var(--c-summary)}.s-embed{background:var(--c-embed)}.s-dirs{background:var(--c-dirs)}
+.g-seg.live{background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);background-size:60px 100%;background-repeat:no-repeat;animation:sheen 1.2s linear infinite}
+@keyframes sheen{from{background-position:-60px 0}to{background-position:calc(100% + 60px) 0}}
+.g-st{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.g-st.ok{color:var(--ink)}.g-st.bad{color:var(--bad)}
+.g-axis{margin-top:4px;padding:0 4px}
+.g-ticks{position:relative;height:18px;border-top:1px solid var(--line)}
+.g-ticks span{position:absolute;top:2px;transform:translateX(-50%);font:10.5px ui-monospace,monospace;color:var(--muted)}
+.g-ticks span::before{content:"";position:absolute;left:50%;top:-3px;height:4px;border-left:1px solid var(--line)}
+.pv-legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11.5px;color:var(--muted);margin:10px 0 0}
+.pv-legend i{display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.pv-note{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6}
+#pvTip{position:fixed;z-index:60;pointer-events:none;background:var(--ink);color:var(--bg);font-size:12px;line-height:1.5;border-radius:6px;padding:6px 9px;max-width:320px;display:none;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+.collbar{height:3px;border-radius:2px;background:var(--line);margin-top:5px;overflow:hidden}
+.collbar i{display:block;height:100%;background:var(--accent);transition:width .6s}
+.pvbtn{background:var(--accent-soft);color:var(--accent);font-size:12px;padding:3px 10px;margin-left:8px}
+@media (max-width:760px){.steps{grid-template-columns:repeat(4,minmax(0,1fr));row-gap:12px}.stp:nth-child(5)::before{display:none}.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.gantt{--lab:110px;--st:0px}.g-st{display:none}}
 </style>
 </head>
 <body>
-<header><h1>pidx</h1><span>PDF / 图片 / Office / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
+<header><h1>pidx</h1><span>PDF / 图片 / Office / Markdown / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
   <nav><a href="./" class="on">演示</a><a href="pipeline">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
 <main>
   <section>
     <h2>文档 <span id="cnt"></span></h2>
-    <div class="up"><input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.zip">
-      <div class="meta" style="margin-top:4px">PDF、图片、Word / PPT / Excel，或带目录的 zip 包</div></div>
+    <div class="up"><input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.md,.markdown,.txt,.zip">
+      <div class="meta" style="margin-top:4px">PDF、图片、Word / PPT / Excel、Markdown / txt，或带目录的 zip 包</div></div>
     <div class="scroll" id="docs"></div>
   </section>
   <section>
@@ -151,6 +210,8 @@ select.sm{font-size:12px;background:var(--bg);color:var(--ink);border:1px solid 
   </section>
 </main>
 <div class="modal" id="modal"><div class="pane" id="modalPane"></div></div>
+<div class="modal" id="pvModal"><div class="pane wide" id="pv"></div></div>
+<div id="pvTip"></div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -164,7 +225,7 @@ async function api(path, opts) {
 
 let collsCache = [], curColl = null;
 const fmtBadge = d => d.format && d.format !== "pdf" ? `<span class="fmt">${esc((d.name.split(".").pop() || d.format))}</span>` : "";
-const pgWord = d => d.format === "office" ? "段" : "页";
+const pgWord = d => d.format === "office" || d.format === "text" ? "段" : "页";
 
 async function loadDocs() {
   const [{documents, total}, {collections}] = await Promise.all([api("v1/documents?limit=1000"), api("v1/collections")]);
@@ -176,7 +237,7 @@ async function loadDocs() {
     const k = c.counts || {}, done = k.completed || 0, n = c.info?.files || 0;
     return `<div class="coll ${curColl===c.id && !cur ? "sel" : ""}" data-cid="${c.id}">
       <div class="n">📁 ${esc(c.name)}</div>
-      <div class="m"><span class="st-${c.status}">${c.status}</span> · ${done}/${n} 个文件已索引${k.failed ? ` · <span class="st-failed">${k.failed} 失败</span>` : ""}${c.info?.skipped?.length ? ` · 跳过 ${c.info.skipped.length}` : ""}</div></div>`;
+      <div class="m"><span class="st-${c.status}">${c.status}</span> · ${done}/${n} 个文件已索引${k.failed ? ` · <span class="st-failed">${k.failed} 失败</span>` : ""}${c.info?.skipped?.length ? ` · 跳过 ${c.info.skipped.length}` : ""}</div>${c.status === "processing" ? `<div class="collbar"><i style="width:${n ? (done + (k.failed || 0)) / n * 100 : 0}%"></i></div>` : ""}</div>`;
   }).join("") + standalone.map(d => `
     <div class="doc ${cur===d.id?"sel":""}" data-id="${d.id}">
       <div class="n">${fmtBadge(d)}${esc(d.name)}</div>
@@ -203,7 +264,9 @@ async function selectColl(cid, quiet) {
     if (top) return (n.summary ? `<div class="box"><h3>资料包概要</h3>${esc(n.summary)}</div>` : "") + kids;
     return `<div class="tn"><div class="row"><span class="tg">▾</span><span>📂 ${esc(n.title)}</span></div>${n.summary ? `<div class="dirSum">${esc(n.summary)}</div>` : ""}<div class="kids">${kids}</div></div>`;
   };
-  $("#tree").innerHTML = dir(c.tree, true) + skipped;
+  const pvLink = `<div class="box" style="display:flex;align-items:center"><span class="meta">${c.status === "processing" ? `正在处理：${c.counts?.completed || 0}/${c.info?.files || 0} 个文件已完成` : "解压、解析、建树、摘要、向量，每个文件花了多久"}</span><span style="flex:1"></span><button class="pvbtn" id="openPV">处理过程 ▸</button></div>`;
+  $("#tree").innerHTML = pvLink + dir(c.tree, true) + skipped;
+  $("#openPV").onclick = () => openPV(cid);
   document.querySelectorAll("#tree .row").forEach(r => r.onclick = () => r.parentElement.classList.toggle("fold"));
   document.querySelectorAll("#tree .fileRow").forEach(r => r.onclick = () => selectDoc(r.dataset.doc));
 }
@@ -489,7 +552,7 @@ async function showPage(docId, page, blocks, text) {
   let html = esc(p.markdown);
   for (const b of bl.filter(Boolean)) { const t = esc(b.text); if (t) html = html.split(t).join(`<mark>${t}</mark>`); }
   $("#modalPane").innerHTML = `<h3>${esc(name)} · ${esc(p.label || "第 " + page + " 段")} <a href="v1/documents/${docId}/file" target="_blank">下载原文件</a>
-      ${blocks.length ? `<span class="meta">标出 ${blocks.length} 个引用块（Office 文件没有版面坐标，显示解析出的文本）</span>` : ""}<span class="x" title="关闭">×</span></h3>
+      ${blocks.length ? `<span class="meta">标出 ${blocks.length} 个引用块（Office / 文本文件没有版面坐标，显示解析出的文本）</span>` : ""}<span class="x" title="关闭">×</span></h3>
     ${quote}<div class="txtpage">${html}</div>`;
   $("#modal").classList.add("on");
 }
@@ -504,8 +567,7 @@ $("#file").onchange = async e => {
   e.target.value = "";
   try {
     if (f.name.toLowerCase().endsWith(".zip")) {
-      const r = await api("v1/collections", {method: "POST", body: fd});
-      await loadDocs(); selectColl(r.collection_id);
+      uploadZip(f, fd);
     } else {
       const r = await api("v1/documents", {method: "POST", body: fd});
       cur = r.doc_id; curColl = null; loadDocs();
@@ -514,6 +576,216 @@ $("#file").onchange = async e => {
 };
 fetch("v1/llm").then(r => r.json()).then(j => {
   $("#llm").innerHTML = j.backends.map(b => `<option value="${b.name}" ${b.name === j.default ? "selected" : ""}>${esc(b.label)}</option>`).join("");
+});
+
+// ---------------------------------------------------------------- zip processing view
+const STG = {wait: "排队", parse: "读文本层", mineru: "MinerU 解析", tree: "建树", summary: "节点摘要", embed: "节点向量", dirs: "目录摘要"};
+const MST = {uploading: "上传到 MinerU", "waiting-file": "MinerU 等待文件", pending: "MinerU 排队中", running: "MinerU 解析中",
+             converting: "MinerU 转换格式", downloading: "下载解析结果", done: "MinerU 完成"};
+const RANK = {parse: 0, mineru: 0, tree: 1, summary: 2, embed: 3};
+const pv = {cid: null, data: null, poll: null, tick: null, skew: 0, upload: null};
+const dur = s => s == null ? "" : s < 10 ? s.toFixed(1) + "s" : s < 60 ? Math.round(s) + "s"
+  : s < 3600 ? Math.floor(s / 60) + "m" + String(Math.floor(s % 60)).padStart(2, "0") + "s" : (s / 3600).toFixed(1) + "h";
+const nowS = () => Date.now() / 1000 + pv.skew;
+
+function openPV(cid, upload) {
+  closePV(true);
+  Object.assign(pv, {cid, data: null, upload: upload || null});
+  $("#pvModal").classList.add("on");
+  renderPV();
+  if (cid) fetchPV();
+  pv.tick = setInterval(() => { if (!pv.data || pv.data.status === "processing" || pv.upload && !pv.upload.done) renderPV(); }, 500);
+}
+function closePV(keep) {
+  clearTimeout(pv.poll); clearInterval(pv.tick); pv.poll = pv.tick = null;
+  if (!keep) { $("#pvModal").classList.remove("on"); pv.cid = null; pv.upload = null; }
+}
+async function fetchPV() {
+  const cid = pv.cid;
+  try {
+    const d = await api(`v1/collections/${cid}/progress`);
+    if (cid !== pv.cid) return;
+    pv.skew = d.now - Date.now() / 1000; pv.data = d; renderPV();
+    if (d.status === "processing") pv.poll = setTimeout(fetchPV, 1000);
+    else loadDocs();
+  } catch (e) { if (cid === pv.cid) pv.poll = setTimeout(fetchPV, 3000); }
+}
+$("#pvModal").onclick = e => { if (e.target.id === "pvModal" || e.target.classList.contains("x")) closePV(); };
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#pvModal").classList.contains("on")) closePV(); });
+
+function uploadZip(f, fd) {
+  const up = {name: f.name, size: f.size, loaded: 0, t0: Date.now() / 1000};
+  openPV(null, up);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "v1/collections");
+  xhr.upload.onprogress = e => { up.loaded = e.loaded; renderPV(); };
+  xhr.upload.onload = () => { up.loaded = up.size; up.sent = Date.now() / 1000; renderPV(); };
+  xhr.onload = async () => {
+    if (xhr.status >= 400) { up.error = (() => { try { return JSON.parse(xhr.responseText).detail; } catch { return xhr.responseText; } })(); renderPV(); return; }
+    const r = JSON.parse(xhr.responseText);
+    up.done = Date.now() / 1000;
+    await loadDocs(); selectColl(r.collection_id);
+    if (pv.upload === up) { pv.cid = r.collection_id; fetchPV(); }
+  };
+  xhr.onerror = () => { up.error = "网络错误，上传中断"; renderPV(); };
+  xhr.send(fd);
+}
+
+function fileRank(f) {                     // how far a file has got: -1 waiting, 0..3 stage, 4 done
+  if (f.status === "completed") return 4;
+  if (f.status === "processing") return RANK[f.stage] ?? 0;
+  return -1;
+}
+
+// Old documents have per-stage seconds but no timestamps: lay their stages out from 0.
+function synthStages(f) {
+  const s = f.seconds || {}, ocr = (f.parser || "").startsWith("mineru");
+  let t = 0;
+  return [["parse", s.parse], ["tree", s.tree], ["summary", s.summary], ["embed", s.embed]]
+    .filter(([, x]) => x != null).map(([n, x]) => { const a = t; t += x; return [n === "parse" && ocr ? "mineru" : n, a, t]; });
+}
+
+function statusText(f, queuePos) {
+  const d = f.detail || {}, llm = f.llm?.calls ? ` · LLM ${f.llm.calls} 次` : "";
+  if (f.status === "queued") return [`排队中 · 第 ${queuePos} 位`, ""];
+  if (f.status === "failed") return [`失败于${STG[(f.stages.at(-1) || [])[0]] || ""}`, "bad"];
+  if (f.status === "completed") {
+    const tot = f.stages.length ? f.stages.at(-1)[2] - f.stages[0][1] : Object.values(f.seconds || {}).reduce((a, b) => a + b, 0);
+    return [`${f.pages ?? "?"} ${pgWord(f)} · ${f.nodes ?? "?"} 节点 · ${dur(tot)}`, "ok"];
+  }
+  switch (f.stage) {
+    case "mineru": {
+      const pg = d.pages_done ? ` ${d.pages_done}/${d.pages_total || "?"} 页` : "";
+      return [(MST[d.state] || "MinerU " + (d.state || "")) + pg, ""]; }
+    case "tree": return [`建树 · ${d.pages ?? "?"} 页${llm}`, ""];
+    case "summary": return [`摘要 ${d.done || 0}/${d.total ?? d.nodes ?? "?"} 节点`, ""];
+    case "embed": return [`向量化 ${d.nodes ?? ""} 个节点`, ""];
+    default: return ["读取文本层", ""];
+  }
+}
+
+function renderPV() {
+  const d = pv.data, up = pv.upload, el = $("#pv");
+  const files = d?.files || [];
+  const now = nowS(), running = !d || d.status === "processing";
+  const counts = {done: files.filter(f => f.status === "completed").length, failed: files.filter(f => f.status === "failed").length};
+
+  // ---- header
+  const status = up?.error ? ["上传失败", "bad"] : !d ? ["上传中", "warn"] : d.status === "processing" ? ["处理中", "warn"]
+    : d.status === "completed" ? ["已完成", "ok"] : ["失败", "bad"];
+  const t0 = d ? (d.ingest?.[0] ?? d.created_at) : up?.t0;
+  const allEnds = files.flatMap(f => f.stages.map(s => s[2] || now)).concat((d?.dirs_stage || []).map(s => s[2] || now));
+  const tEnd = running ? now : Math.max(t0, ...allEnds);
+  const startTxt = t0 ? new Date((t0 - pv.skew) * 1000).toLocaleTimeString() : "";
+  let html = `<div class="pv-head"><span class="t">📁 ${esc(d?.name || up?.name || "")}</span>
+    <span class="pill st-${status[1] === "ok" ? "completed" : status[1] === "bad" ? "failed" : "processing"}">${status[0]}</span>
+    <span class="meta">${startTxt ? `开始于 ${startTxt} · ${running ? "已用" : "共"} ${dur(Math.max(0, tEnd - t0))}` : ""}
+    ${d ? ` · 同时处理 ${d.workers} 个文件` : ""}</span><span class="x" title="关闭">×</span></div>`;
+
+  // ---- stepper
+  const N = files.length || 0;
+  const stepAt = k => {                       // per-file stage k: done / active / failed counts
+    let done = 0, act = 0, bad = 0;
+    for (const f of files) {
+      const r = fileRank(f);
+      if (r > k) done++; else if (r === k && f.status === "processing") act++;
+      else if (f.status === "failed" && (RANK[f.stages.at(-1)?.[0]] ?? 0) === k) bad++;
+    }
+    return {done, act, bad};
+  };
+  const steps = [];
+  const upPct = up && !up.done ? Math.round(up.loaded / Math.max(up.size, 1) * 100) : 100;
+  steps.push({nm: "上传", st: up?.error ? "bad" : up && !up.sent ? "run" : "done",
+              sb: up && !up.sent ? `${upPct}% · ${(up.size / 2 ** 20).toFixed(1)} MB` : (d?.zip_bytes || up?.size) ? `${((d?.zip_bytes || up.size) / 2 ** 20).toFixed(1)} MB` : "", bar: up && !up.sent ? upPct : null});
+  steps.push({nm: "解压 · 校验", st: up?.error && up.sent ? "bad" : d ? "done" : up?.sent ? "run" : "",
+              sb: d ? `${N} 文件 · ${d.dirs} 目录${d.skipped.length ? ` · 跳过 ${d.skipped.length}` : ""}` : up?.error ? "" : up?.sent ? "解压中…" : ""});
+  [["解析 / OCR", "parse"], ["建树", "tree"], ["节点摘要", "summary"], ["节点向量", "embed"]].forEach(([nm, key], k) => {
+    const c = stepAt(k);
+    steps.push({nm, sw: key, st: !d ? "" : c.done + c.bad === N && N ? (c.done ? "done" : "bad") : c.act ? "run" : c.done ? "run" : "",
+                sb: d ? `${c.done}/${N}${c.act ? ` · 进行中 ${c.act}` : ""}${c.bad ? ` · 失败 ${c.bad}` : ""}` : "", bar: d ? c.done / Math.max(N, 1) * 100 : null});
+  });
+  const dl = d?.dirs_stage?.length, dd = d?.dirs_detail;
+  steps.push({nm: "目录摘要", sw: "dirs", st: !d ? "" : dd ? "run" : d.status !== "processing" && dl ? "done" : d.status === "failed" ? "bad" : "",
+              sb: dd ? `${dd.done || 0}/${dd.total}` : d && dl ? dur(d.dirs_stage[0][2] - d.dirs_stage[0][1]) : d ? `${d.dirs} 个目录` : ""});
+  steps.push({nm: "完成", st: !d ? "" : d.status === "completed" ? "done" : d.status === "failed" ? "bad" : "",
+              sb: d && d.status !== "processing" ? `${counts.done} 成功${counts.failed ? ` · ${counts.failed} 失败` : ""}` : ""});
+  html += `<div class="steps">${steps.map((s, i) => `<div class="stp ${s.st}"><div class="dot">${s.st === "done" ? "✓" : s.st === "bad" ? "!" : i + 1}</div>
+    <div class="nm">${s.sw ? `<span class="sw s-${s.sw === "parse" ? "parse" : s.sw}"></span>` : ""}${s.nm}</div><div class="sb">${s.sb || ""}</div>
+    ${s.bar != null ? `<div class="bar"><i style="width:${s.bar}%"></i></div>` : ""}</div>`).join("")}</div>`;
+
+  if (up?.error) { el.innerHTML = html + `<div class="empty st-failed">${esc(up.error)}</div>`; return; }
+  if (!d) { el.innerHTML = html + `<div class="empty">${up?.sent ? "服务器正在解压、检查文件格式…" : "正在上传…"}</div>`; return; }
+
+  // ---- tiles
+  const sum = k => files.reduce((a, f) => a + (f[k] || 0), 0);
+  const llmCalls = files.reduce((a, f) => a + (f.llm?.calls || 0), 0);
+  const llmTok = files.reduce((a, f) => a + (f.llm?.prompt_tokens || 0) + (f.llm?.completion_tokens || 0), 0);
+  const ocrN = files.filter(f => (f.parser || "").startsWith("mineru") || f.stages.some(s => s[0] === "mineru")).length;
+  const tiles = [[`${counts.done}<small> / ${N}</small>`, "文件已完成"], [sum("pages"), "页 / 段"], [ocrN + `<small> / ${N}</small>`, "走 MinerU 的文件"],
+                 [sum("nodes"), "树节点"], [sum("vectors"), "节点向量（bge-m3）"],
+                 [`${llmCalls}<small> 次 · ${(llmTok / 1000).toFixed(0)}k tok</small>`, "LLM 调用"]];
+  html += `<div class="tiles">${tiles.map(([v, k]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("")}</div>`;
+
+  // ---- gantt
+  const synth = files.some(f => f.status === "completed" && !f.stages.length);
+  let span, rowsOf;
+  if (synth) {
+    const st = files.map(synthStages);
+    span = Math.max(1, ...st.map(x => x.at(-1)?.[2] || 0));
+    rowsOf = i => ({wait: null, stages: st[i]});
+  } else {
+    span = Math.max(1, tEnd - t0);
+    rowsOf = i => {
+      const f = files[i], first = f.stages[0]?.[1];
+      const qa = Math.max(t0, f.queued_at || t0);
+      const waitEnd = first ?? (f.status === "queued" ? now : qa);
+      return {wait: [qa, waitEnd], stages: f.stages.map(([n, a, b]) => [n, a - t0, (b ?? now) - t0, b == null])};
+    };
+  }
+  const P = x => (Math.max(0, x) / span * 100).toFixed(3);
+  const seg = (cls, a, b, tip, live) => `<div class="g-seg ${cls}${live ? " live" : ""}" style="left:${P(a)}%;width:max(2px,calc(${P(b - a)}% - 2px))" data-tip="${esc(tip)}"></div>`;
+  let queuePos = 0, lastDir = null, rows = "";
+  files.forEach((f, i) => {
+    const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+    if (dir !== lastDir) { rows += dir || lastDir !== null ? `<div class="g-dir">📂 ${esc(dir || "（根目录）")}</div>` : ""; lastDir = dir; }
+    if (f.status === "queued") queuePos++;
+    const r = rowsOf(i), [stx, cls] = statusText(f, queuePos);
+    let bars = "";
+    if (r.wait && r.wait[1] - r.wait[0] > 0.2) bars += seg("s-wait", r.wait[0] - t0, r.wait[1] - t0, `排队等待 ${dur(r.wait[1] - r.wait[0])}`);
+    for (const [n, a, b, live] of r.stages)
+      bars += seg("s-" + n, a, b, `${STG[n] || n} · ${dur(b - a)}${live ? "（进行中）" : ""}${n === "mineru" && f.detail?.state && live ? " · " + (MST[f.detail.state] || f.detail.state) : ""}`, live);
+    const ext = (f.name.split(".").pop() || "").toLowerCase();
+    rows += `<div class="g-row ${f.status === "completed" ? "clk" : ""}" data-doc="${f.doc_id}" title="${esc(f.path)}${f.error ? "\n" + esc(f.error) : ""}">
+      <div class="g-lab"><span class="fmt">${esc(ext)}</span><span class="nm">${esc(f.name)}</span></div>
+      <div class="g-track">${bars}</div><div class="g-st ${cls}">${esc(stx)}</div></div>`;
+  });
+  if (!synth && d.dirs_stage?.length) {
+    const [, a, b] = d.dirs_stage[0], live = b == null;
+    rows += `<div class="g-dir">📁 资料包</div><div class="g-row"><div class="g-lab"><span class="nm">目录摘要（自底向上）</span></div>
+      <div class="g-track">${seg("s-dirs", a - t0, (b ?? now) - t0, `目录摘要 · ${dur((b ?? now) - a)}`, live)}</div>
+      <div class="g-st ${live ? "" : "ok"}">${live ? `${dd?.done || 0}/${dd?.total} 个目录` : `${d.dirs} 个目录 · ${dur(b - a)}`}</div></div>`;
+  }
+  const stepS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200].find(x => span / x <= 7) || 7200;
+  let ticks = "";
+  for (let x = 0; x <= span + 1e-6; x += stepS) ticks += `<span style="left:${P(x)}%">${x === 0 ? "0" : dur(x)}</span>`;
+  html += `<div class="gantt">${rows}<div class="g-axis"><span></span><div class="g-ticks">${ticks}</div><span></span></div></div>`;
+  html += `<div class="pv-legend">${["wait", "parse", "mineru", "tree", "summary", "embed", "dirs"].map(n =>
+    `<span><i class="${n === "wait" ? "" : "s-" + n}" style="${n === "wait" ? "background:repeating-linear-gradient(135deg,var(--line) 0 3px,transparent 3px 6px)" : ""}"></i>${STG[n]}</span>`).join("")}</div>`;
+  const notes = [];
+  if (synth) notes.push("这个资料包是在记录阶段时间戳之前索引的，所以每个文件的条形都从 0 开始，只表示各阶段耗时，看不出排队和并行。");
+  else notes.push(`横轴是从解压完成起的时间。文件按 ${d.workers} 个一组并行处理；条形左边的斜纹是排队等待。点已完成的文件可以看它的树索引。`);
+  if (d.skipped.length) notes.push("跳过：" + d.skipped.map(x => `${esc(x.path)}（${esc(x.reason)}）`).join("、"));
+  if (d.error) notes.push(`<span class="st-failed">${esc(d.error)}</span>`);
+  html += `<div class="pv-note">${notes.join("<br>")}</div>`;
+  el.innerHTML = html;
+  el.querySelectorAll(".g-row.clk").forEach(r => r.onclick = () => { closePV(); selectDoc(r.dataset.doc); });
+}
+document.addEventListener("mousemove", e => {
+  const tip = $("#pvTip"), s = e.target.closest?.(".g-seg");
+  if (!s) { tip.style.display = "none"; return; }
+  tip.textContent = s.dataset.tip; tip.style.display = "block";
+  const w = tip.offsetWidth;
+  tip.style.left = Math.min(e.clientX + 12, innerWidth - w - 8) + "px"; tip.style.top = (e.clientY + 14) + "px";
 });
 loadDocs();
 </script>

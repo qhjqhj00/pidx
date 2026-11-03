@@ -65,7 +65,7 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
 <h2 id="docs">文档</h2>
 
 <div class="ep" id="submit"><span class="m post">POST</span><h3>/v1/documents</h3></div>
-<p>上传一个文件，立刻返回 <code>doc_id</code>，索引在后台建立。请求格式是 <code>multipart/form-data</code>。支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx）；zip 请用 <a href="#collections"><code>POST /v1/collections</code></a>。</p>
+<p>上传一个文件，立刻返回 <code>doc_id</code>，索引在后台建立。请求格式是 <code>multipart/form-data</code>。支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx）、Markdown / 纯文本（md / markdown / txt）；zip 请用 <a href="#collections"><code>POST /v1/collections</code></a>。</p>
 <table>
   <tr><th>字段</th><th>类型</th><th>默认</th><th>说明</th></tr>
   <tr><td><code>file</code></td><td>file</td><td>必填</td><td>按扩展名判断格式，并检查文件头。图片和 Office 文件需要配置 MinerU。</td></tr>
@@ -137,6 +137,17 @@ curl -X POST $BASE/v1/search -H 'Content-Type: application/json' -d '{
   {"type": "dir", "title": "02_财务", "path": "02_财务", "node_id": "d0002", "summary": "…", "nodes": [
     {"type": "file", "title": "2025年度预算.xlsx", "path": "02_财务/2025年度预算.xlsx", "doc_id": "pi-…",
      "status": "completed", "pageNum": 3, "format": "office", "description": "…"}]}]}</code></pre>
+
+<div class="ep"><span class="m get">GET</span><h3>/v1/collections/{collection_id}/progress</h3></div>
+<p>处理进度，演示页的「处理过程」视图就是用它画的。每个文件给出各阶段的起止时间戳（Unix 秒），处理中的文件还有当前阶段 <code>stage</code> 和细节 <code>detail</code>。阶段依次是 <code>parse</code>（读文本层）、<code>mineru</code>（OCR / Office 解析）、<code>tree</code>、<code>summary</code>、<code>embed</code>；资料包最后还有 <code>dirs</code>（目录摘要）。</p>
+<pre><code>{"id": "pc-…", "status": "processing", "now": 1793684400.1, "workers": 2,
+ "ingest": [1793684353.73, 1793684353.9], "dirs": 8, "skipped": [],
+ "files": [{"doc_id": "pi-…", "path": "01_立项/立项评审会.pptx", "status": "processing", "queued_at": 1793684353.8,
+            "stage": "mineru", "detail": {"state": "running", "pages_done": 12, "pages_total": 40},
+            "stages": [["parse", 1793684354.0, 1793684354.1], ["mineru", 1793684354.1, null]],
+            "llm": {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}, "pages": null, "nodes": null}, …],
+ "dirs_stage": [], "dirs_detail": null}</code></pre>
+<p class="muted">MinerU 的 <code>state</code>：<code>uploading → pending（排队）→ running → converting → downloading</code>。阶段时间戳在文档完成后写进 <code>info.stages</code>，所以完成后也能画时间线。</p>
 
 <div class="ep"><span class="m del">DELETE</span><h3>/v1/collections/{collection_id}</h3></div>
 <p>删除资料包和它的所有文档。</p>

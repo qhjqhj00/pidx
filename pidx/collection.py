@@ -11,10 +11,11 @@ Collection tree node:  {"type": "dir", "title", "path", "summary", "nodes": [...
 import asyncio
 import logging
 import shutil
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from . import config, parse, store
+from . import config, parse, progress, store
 from .llm import chat
 
 log = logging.getLogger("pidx.collection")
@@ -51,6 +52,7 @@ def ingest_zip(zip_path: str, name: str, options: dict) -> tuple[str, list[str],
 
     Files are written to FILES_DIR under generated names, so paths inside the zip never touch the
     filesystem (no zip-slip). Limits: file count, per-file and total uncompressed size."""
+    t0 = time.time()
     try:
         z = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile:
@@ -130,7 +132,8 @@ def ingest_zip(zip_path: str, name: str, options: dict) -> tuple[str, list[str],
     if not doc_ids:
         raise ValueError("zip contains no readable files: " + "; ".join(f"{s['path']}: {s['reason']}" for s in skipped))
     _number(root)
-    info = {"files": len(doc_ids), "dirs": len(dirs), "skipped": skipped}
+    info = {"files": len(doc_ids), "dirs": len(dirs), "skipped": skipped, "ingest": [round(t0, 2), round(time.time(), 2)],
+            "zip_bytes": Path(zip_path).stat().st_size}
     store.create_collection(cid, root_name, root, info)
     log.info("collection %s (%s): %d files, %d skipped", cid, root_name, len(doc_ids), len(skipped))
     return cid, doc_ids, info
@@ -161,6 +164,10 @@ async def summarize(cid: str):
     coll = store.get_collection(cid)
     root = coll["tree"]
     docs = {d["id"]: d for d in store.list_documents(limit=100000, collection_id=cid)[0]}
+    progress.begin(cid)
+    total = sum(1 for n in walk(root) if n["type"] == "dir")
+    progress.stage("dirs", {"done": 0, "total": total})
+    done = [0]
 
     async def one(node):
         await asyncio.gather(*(one(c) for c in node["nodes"] if c["type"] == "dir"))
@@ -176,10 +183,15 @@ async def summarize(cid: str):
                                                                      coll=root["title"], listing=listing)}],
                        max_tokens=300)
         node["summary"] = s.strip()
+        done[0] += 1
+        progress.detail(done=done[0])
 
-    await one(root)
+    try:
+        await one(root)
+    finally:
+        stages = progress.end(cid)
     counts = store.collection_status_counts(cid)
-    info = {**(coll["info"] or {}), "status_counts": counts}
+    info = {**(coll["info"] or {}), "status_counts": counts, "stages": stages}
     store.update_collection(cid, tree=root, info=info,
                             status="completed" if counts.get("completed") else "failed",
                             error=None if counts.get("completed") else "no file could be indexed")

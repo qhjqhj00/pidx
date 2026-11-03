@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 import pymupdf
 
-from . import config
+from . import config, progress
 from .llm import approx_tokens
 
 log = logging.getLogger("pidx.parse")
@@ -44,7 +44,7 @@ def _is_page_number(text: str) -> bool:
 
 
 def file_format(name: str) -> str | None:
-    """"pdf" | "image" | "office" | None (unsupported), by extension."""
+    """"pdf" | "image" | "office" | "text" | None (unsupported), by extension."""
     ext = Path(name).suffix.lower()
     if ext in config.PDF_EXTS:
         return "pdf"
@@ -52,6 +52,8 @@ def file_format(name: str) -> str | None:
         return "image"
     if ext in config.OFFICE_EXTS:
         return "office"
+    if ext in config.TEXT_EXTS:
+        return "text"
     return None
 
 
@@ -75,6 +77,8 @@ def check_file(path: str, fmt: str) -> None:
         ok = head.startswith(b"PK\x03\x04") if ext.endswith("x") else head.startswith(b"\xd0\xcf\x11\xe0")
         if not ok:
             raise ValueError(f"not a valid {ext} file")
+    elif fmt == "text":
+        read_text(path)
 
 
 def image_to_pdf(src: str, dst: str) -> None:
@@ -94,6 +98,8 @@ def parse_file(path: str, fmt: str, mode: str = "auto", pdf_path: str | None = N
         return parse_pdf(pdf_path or path, "ocr")
     if fmt == "office":
         return parse_office(path)
+    if fmt == "text":
+        return parse_text(path)
     raise ValueError(f"unsupported format {fmt!r}")
 
 
@@ -227,6 +233,7 @@ def _r(b):
 def mineru(path: str, page_count: int | None = None) -> list[dict]:
     """MinerU content_list for any file it accepts (cloud API, or self-hosted if PIDX_MINERU_URL is set)."""
     _need_mineru()
+    progress.stage("mineru", {"state": "uploading"})
     if config.MINERU_API_KEY and not config.MINERU_URL:
         return mineru_cloud(path, page_count)
     return _mineru_selfhosted(path)
@@ -307,6 +314,7 @@ def _content_list_from_zip(data: bytes) -> list[dict]:
     return json.loads(z.read(name))
 
 
+_STATE_ORDER = ["waiting-file", "pending", "running", "converting", "done", "failed"]
 MINERU_MAX_PAGES = 200   # per-file limit of the cloud API
 
 
@@ -355,6 +363,10 @@ def mineru_cloud(path: str, page_count: int | None = None, timeout=3600) -> list
         r.raise_for_status()
         results = {x.get("data_id") or stem(x["file_name"]): x for x in r.json()["data"]["extract_result"]}
         states = [results.get(stem(n), {}).get("state", "waiting-file") for n, _, _ in parts]
+        prog = [results.get(stem(n), {}).get("extract_progress") or {} for n, _, _ in parts]
+        progress.detail(state=min(states, key=_STATE_ORDER.index) if all(s in _STATE_ORDER for s in states) else states[0],
+                        pages_done=sum(int(p.get("extracted_pages") or 0) for p in prog) or None,
+                        pages_total=sum(int(p.get("total_pages") or 0) for p in prog) or page_count, parts=len(parts))
         if any(s == "failed" for s in states):
             errs = [x.get("err_msg") for x in results.values() if x.get("state") == "failed"]
             raise RuntimeError(f"MinerU failed: {errs}")
@@ -364,6 +376,7 @@ def mineru_cloud(path: str, page_count: int | None = None, timeout=3600) -> list
             raise TimeoutError(f"MinerU batch {batch_id} not done after {timeout}s: {states}")
         time.sleep(5)
 
+    progress.detail(state="downloading")
     items = []
     for n, _, offset in parts:
         z = http.get(results[stem(n)]["full_zip_url"], timeout=600)
@@ -387,6 +400,61 @@ def parse_office(path: str) -> dict:
     the header row repeated."""
     items = mineru(path)
     return office_pages(items, Path(path).suffix.lower())
+
+
+def read_text(path: str) -> str:
+    raw = open(path, "rb").read()
+    if b"\x00" in raw[:4096]:
+        raise ValueError("not a text file")
+    for enc in ("utf-8-sig", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("text file is neither UTF-8 nor GBK")
+
+
+def parse_text(path: str) -> dict:
+    """Markdown / plain text, parsed locally (no MinerU): ATX headings become titled items, pipe
+    tables table items, fenced code and paragraphs text items; then the Office virtual-page path."""
+    progress.stage("parse")
+    items, para, fence = [], [], None
+
+    def flush():
+        if para:
+            text = "\n".join(para).strip()
+            if text:
+                table = all(l.lstrip().startswith("|") for l in para if l.strip())
+                items.append({"type": "table", "table_body": text} if table else {"type": "text", "text": text})
+            para.clear()
+
+    for line in read_text(path).splitlines():
+        if fence is not None:
+            para.append(line)
+            if line.strip().startswith(fence):
+                fence = None
+                flush()
+            continue
+        st = line.strip()
+        if st.startswith(("```", "~~~")):
+            flush()
+            fence = st[:3]
+            para.append(line)
+            continue
+        m = re.match(r"(#{1,6})\s+(.+?)\s*#*\s*$", st)
+        if m:
+            flush()
+            items.append({"type": "text", "text": m.group(2), "text_level": len(m.group(1))})
+        elif not st:
+            flush()
+        else:
+            if para and (st.startswith("|") != para[-1].lstrip().startswith("|")):
+                flush()
+            para.append(line)
+    flush()
+    res = office_pages(items, Path(path).suffix.lower())
+    res["parser"] = "markdown" if Path(path).suffix.lower() in (".md", ".markdown") else "text"
+    return res
 
 
 def office_pages(items: list[dict], ext: str) -> dict:

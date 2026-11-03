@@ -75,7 +75,8 @@ MINERU_URL = os.environ.get("PIDX_MINERU_URL", "")
 PDF_EXTS = {".pdf"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp"}
 OFFICE_EXTS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
-SUPPORTED_EXTS = PDF_EXTS | IMAGE_EXTS | OFFICE_EXTS
+TEXT_EXTS = {".md", ".markdown", ".txt"}
+SUPPORTED_EXTS = PDF_EXTS | IMAGE_EXTS | OFFICE_EXTS | TEXT_EXTS
 VIRTUAL_PAGE_TOKENS = _int("PIDX_VIRTUAL_PAGE_TOKENS", 1500)
 
 # Zip upload -> collection (directory tree + one document per supported file)

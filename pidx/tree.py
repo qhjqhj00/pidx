@@ -20,7 +20,7 @@ import difflib
 import logging
 import re
 
-from . import config
+from . import config, progress
 from .llm import approx_tokens, chat, chat_json
 
 log = logging.getLogger("pidx.tree")
@@ -397,7 +397,16 @@ def _clip(text, max_tok=6000):
 
 
 async def summarize(nodes, pages, doc_name):
+    total, done = sum(1 for _ in walk(nodes)), [0]
+
     async def one(n):
+        try:
+            await _one(n)
+        finally:
+            done[0] += 1
+            progress.detail(done=done[0], total=total)
+
+    async def _one(n):
         own = text_between(pages, tuple(n["start"]), tuple(n["text_end"]) if n["text_end"] else None)
         if n["nodes"]:
             kids = "Subsections: " + "; ".join(c["title"] for c in n["nodes"])

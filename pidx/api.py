@@ -24,6 +24,7 @@ import logging
 import mimetypes
 import shutil
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import collection, config, indexer, parse, search as searchmod, store, tree
+from . import collection, config, indexer, parse, progress, search as searchmod, store, tree
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -87,7 +88,8 @@ def _public(d):
     return {"id": d["id"], "name": d["name"], "status": d["status"], "error": d.get("error"),
             "pageNum": d.get("page_count"), "description": d.get("description"), "metadata": d.get("metadata"),
             "createdAt": d.get("created_at"), "info": d.get("info"), "format": d.get("format"),
-            "pageImages": bool(d.get("pdf_path")), "collectionId": d.get("collection_id"), "relPath": d.get("rel_path")}
+            "pageImages": bool(d.get("pdf_path")), "collectionId": d.get("collection_id"), "relPath": d.get("rel_path"),
+            "progress": progress.get(d["id"]) if d["status"] == "processing" else None}
 
 
 def parse_pages(spec: str) -> list[int]:
@@ -185,6 +187,37 @@ def get_collection(cid: str):
     if not c:
         raise HTTPException(404, f"collection {cid} not found")
     return _coll_public(c, with_tree=True)
+
+
+@app.get("/v1/collections/{cid}/progress")
+def collection_progress(cid: str):
+    """Everything the processing timeline needs, per file: stage timestamps, live stage + detail, outcome."""
+    c = store.get_collection(cid)
+    if not c:
+        raise HTTPException(404, f"collection {cid} not found")
+    docs = {d["id"]: d for d in store.list_documents(limit=100000, collection_id=cid)[0]}
+    files = []
+    for n in collection.walk(c["tree"]):
+        if n["type"] != "file" or n["doc_id"] not in docs:
+            continue
+        d = docs[n["doc_id"]]
+        i = d.get("info") or {}
+        live = progress.get(d["id"]) if d["status"] == "processing" else None
+        files.append({"doc_id": d["id"], "path": n["path"], "name": d["name"], "format": d["format"],
+                      "status": d["status"], "error": d.get("error"), "queued_at": d.get("created_at"),
+                      "pages": d.get("page_count"), "nodes": i.get("nodes"), "vectors": i.get("node_vectors"),
+                      "parser": i.get("parser"), "method": i.get("method"), "seconds": i.get("seconds"),
+                      "llm": (live or {}).get("llm") or i.get("llm"),
+                      "stages": (live or {}).get("stages") or i.get("stages") or [],
+                      "stage": (live or {}).get("stage"), "detail": (live or {}).get("detail")})
+    info = c.get("info") or {}
+    live = progress.get(cid)
+    return {"id": cid, "name": c["name"], "status": c["status"], "error": c.get("error"),
+            "created_at": c.get("created_at"), "now": time.time(), "workers": config.INDEX_WORKERS,
+            "ingest": info.get("ingest"), "zip_bytes": info.get("zip_bytes"), "dirs": info.get("dirs"),
+            "skipped": info.get("skipped") or [], "files": files,
+            "dirs_stage": (live or {}).get("stages") or info.get("stages") or [],
+            "dirs_detail": (live or {}).get("detail")}
 
 
 @app.delete("/v1/collections/{cid}")

@@ -9,7 +9,7 @@ import logging
 import time
 import traceback
 
-from . import collection, config, llm, parse, store, tree
+from . import collection, config, llm, parse, progress, store, tree
 
 log = logging.getLogger("pidx.indexer")
 
@@ -54,6 +54,8 @@ async def index_document(doc_id: str) -> None:
     store.update_document(doc_id, status="processing", error=None)
     t0 = time.time()
     used = llm.new_scope()
+    progress.begin(doc_id, used)
+    progress.stage("parse")
     parsed = await asyncio.to_thread(parse.parse_file, doc["path"], doc["format"], opts.get("mode", "auto"),
                                      doc.get("pdf_path"))
     pages = parsed["pages"]
@@ -61,13 +63,16 @@ async def index_document(doc_id: str) -> None:
     store.update_document(doc_id, page_count=len(pages))
     t1 = time.time()
 
+    progress.stage("tree", {"pages": len(pages)})
     nodes, info = await tree.build_tree(parsed)
     t2 = time.time()
+    progress.stage("summary", {"nodes": info["nodes"]})
     if opts.get("summary", True):
         await tree.summarize(nodes, pages, doc["name"])
     description = await tree.describe(nodes, pages, doc["name"])
     t3 = time.time()
 
+    progress.stage("embed", {"nodes": info["nodes"]})
     where = doc.get("rel_path") or doc["name"]
     emb = await llm.embed([f"{where}\n{description}"])
     n_vec = await embed_nodes(doc, nodes, pages)
@@ -75,7 +80,7 @@ async def index_document(doc_id: str) -> None:
     info.update(parser=parsed["parser"], format=doc["format"], node_vectors=n_vec,
                 seconds={"parse": round(t1 - t0, 1), "tree": round(t2 - t1, 1), "summary": round(t3 - t2, 1),
                          "embed": round(t4 - t3, 1)},
-                llm=used)
+                llm=used, stages=progress.end(doc_id))
     store.update_document(doc_id, status="completed", tree=nodes, info=info, description=description,
                           embedding=emb[0] if emb else None)
     log.info("indexed %s (%s, %d pages, %d nodes) in %.0fs", doc_id, doc["name"], len(pages), info["nodes"], t4 - t0)
@@ -107,7 +112,10 @@ async def _worker(n: int):
             if job.startswith("pc-"):
                 store.update_collection(job, status="failed", error=repr(e)[:2000])
             else:
-                store.update_document(job, status="failed", error=repr(e)[:2000])
+                stages = progress.end(job)
+                d = store.get_document(job) or {}
+                info = {**(d.get("info") or {}), "stages": stages, "failed_stage": stages[-1][0] if stages else None}
+                store.update_document(job, status="failed", error=repr(e)[:2000], info=info)
         finally:
             if not job.startswith("pc-"):
                 try:

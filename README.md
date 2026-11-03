@@ -2,7 +2,7 @@
 
 把文档建成一棵**章节树**，提问时让 LLM **读树推理**该看哪几节，再读原文作答。不切 chunk；节点向量先召回最相关的几棵子树（小文档就是整棵树），LLM 再并行阅读。答案里的论断附**版面块级引用**（页码 + 坐标框），PDF 和图片点开就能在原页上高亮。
 
-支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx），以及带目录层级的 **zip 资料包**（目录成为树的上层节点）。
+支持 PDF、图片（png / jpg / jpeg / jp2 / webp / gif / bmp）、Word / PPT / Excel（doc / docx / ppt / pptx / xls / xlsx）、Markdown / 纯文本（md / markdown / txt，本地解析，不经过 MinerU），以及带目录层级的 **zip 资料包**（目录成为树的上层节点）。
 
 思路来自 [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex)（MIT），接口形状也和它对齐（`submit / get_tree / get_page_content / get_block`），另外加了 `search`。实现是独立写的，建树、扫描件 OCR、检索流程都不同，见下面的[工作原理](#工作原理)。
 
@@ -93,8 +93,8 @@ for f in samples/*.pdf; do .venv/bin/python -m pidx index "$f" --no-wait; done
 
 | 接口 | 说明 |
 |---|---|
-| `POST /v1/documents` | 上传文件（PDF / 图片 / Office；multipart：`file`，可选 `mode`、`summary`、`metadata`），返回 `doc_id`，后台建索引 |
-| `POST /v1/collections` | 上传 zip，返回 `collection_id` 和各文件的 `doc_id`；`GET /v1/collections[/{id}]` 看目录树和进度，`DELETE` 删除 |
+| `POST /v1/documents` | 上传文件（PDF / 图片 / Office / Markdown；multipart：`file`，可选 `mode`、`summary`、`metadata`），返回 `doc_id`，后台建索引 |
+| `POST /v1/collections` | 上传 zip，返回 `collection_id` 和各文件的 `doc_id`；`GET /v1/collections[/{id}]` 看目录树和进度，`GET /v1/collections/{id}/progress` 看每个文件的阶段时间线，`DELETE` 删除 |
 | `GET /v1/documents[/{id}]` | 列表 / 状态（`queued → processing → completed / failed`），`info` 里有建树方式、耗时、LLM 用量 |
 | `POST /v1/documents/{id}/reindex` | 重建索引，期间旧树仍可检索 |
 | `DELETE /v1/documents/{id}` | 删除 |
@@ -124,7 +124,7 @@ claude mcp add pidx -e PIDX_API=http://127.0.0.1:8890 -- $PWD/.venv/bin/python -
 
 **建索引**（`pidx/parse.py`、`pidx/tree.py`）
 
-1. **解析**：文本型 PDF 用 PyMuPDF 取出字符片段，按基线重组成行，记录字号、粗体、块 bbox，并去掉页眉页脚和页码。每页平均不到 80 个字符的判为扫描件，交给 MinerU。图片包成单页 PDF 后走扫描件流程。Office 文件交给 MinerU 原生解析：Word 的标题样式给出标题层级，表格转成 markdown（超长的按行拆开并重复表头），再切成约 1500 token 的虚拟页。
+1. **解析**：文本型 PDF 用 PyMuPDF 取出字符片段，按基线重组成行，记录字号、粗体、块 bbox，并去掉页眉页脚和页码。每页平均不到 80 个字符的判为扫描件，交给 MinerU。图片包成单页 PDF 后走扫描件流程。Office 文件交给 MinerU 原生解析：Word 的标题样式给出标题层级，表格转成 markdown（超长的按行拆开并重复表头），再切成约 1500 token 的虚拟页。Markdown / txt 在本地解析：`#` 标题给出层级，管道表格保留为表格，之后同样切成虚拟页。
 2. **建树**：依次尝试，前一种不成立才用下一种：
    1. 用 PDF 书签；
    2. 从版面里挑标题候选（字号、粗体、编号；MinerU 给出的标题层级），交给 LLM 选出真标题并定层级。LLM 只能返回候选编号，所以每个标题都锚定在真实的一行上；

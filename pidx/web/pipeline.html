@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="static/page.css">
 </head>
 <body>
-<header><h1>pidx</h1><span>PDF / 图片 / Office / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
+<header><h1>pidx</h1><span>PDF / 图片 / Office / Markdown / zip → 树索引 → 向量召回子树 + LLM 推理检索（不切块）</span>
   <nav><a href="./">演示</a><a href="pipeline" class="on">Pipeline</a><a href="api-docs">接口文档</a></nav></header>
 
 <div class="layout">
@@ -134,7 +134,7 @@
   <tr><td>页眉页脚</td><td>出现在页面上下各 8% 区域、并且在 ≥25% 页上重复的行（比较前先把数字归一），以及页码，都从正文里去掉。这样它们不会混进节点原文，也不会被误当成标题。</td></tr>
   <tr><td>扫描件</td><td>平均每页不到 80 个字符就判为扫描件，转交 mineru.net 的云端 MinerU（OCR + 版面分析）；单文件上限 200 页，超出的在本地切段后分别上传，结果再按页码拼回。MinerU 的 <code>content_list</code> 会带出标题层级、表格（HTML）、图片和图表的说明文字，坐标从 0–1000 换算回 PDF 坐标。也可以用 <code>mode=ocr</code> 强制走这条路。</td></tr>
   <tr><td>图片<br><span class="muted">png jpg jpeg jp2 webp gif bmp</span></td><td>上传时用 Pillow 包成单页 PDF（gif 取第一帧，150 dpi），之后完全按扫描件处理：MinerU OCR，引用能在原图上画框。</td></tr>
-  <tr><td>Office<br><span class="muted">doc docx ppt pptx xls xlsx</span></td><td>原文件直接交给 MinerU 解析，不转 PDF。MinerU 对 Office 不给坐标：Word 整篇是一页，PPT 一张幻灯片一页，Excel 一个工作表一页；Word 的标题样式会给出标题层级，表格是 HTML。pidx 把它们切成<b>虚拟页</b>：每页约 1500 token，尽量在标题前断开；表格转成 markdown，超长的表按行拆开并重复表头。PPT / Excel 的页带标签（「幻灯片 3」「工作表 2 · 电站清单」）。之后建树、摘要、检索都和 PDF 一样，只是没有页图，引用打开的是解析出的文本。</td></tr>
+  <tr><td>Office<br><span class="muted">doc docx ppt pptx xls xlsx</span></td><td>原文件直接交给 MinerU 解析，不转 PDF。MinerU 对 Office 不给坐标：Word 整篇是一页，PPT 一张幻灯片一页，Excel 一个工作表一页；Word 的标题样式会给出标题层级，表格是 HTML。pidx 把它们切成<b>虚拟页</b>：每页约 1500 token，尽量在标题前断开；表格转成 markdown，超长的表按行拆开并重复表头。Markdown / txt 走同一条路，但在本地解析，不经过 MinerU：<code>#</code> 标题给出层级，管道表格保留为表格。PPT / Excel 的页带标签（「幻灯片 3」「工作表 2 · 电站清单」）。之后建树、摘要、检索都和 PDF 一样，只是没有页图，引用打开的是解析出的文本。</td></tr>
 </table>
 
 <h3 id="tree">② 建树 <span class="muted" style="font-size:13px">pidx/tree.py</span></h3>
